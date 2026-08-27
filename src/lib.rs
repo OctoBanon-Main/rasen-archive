@@ -15,3 +15,6 @@ pub use format::{
 pub use packer::{pack, pack_with_options};
 pub use path::hash_path;
 pub use types::{Entry, InputFile, PackOptions};
+
+#[cfg(test)]
+mod tests;
