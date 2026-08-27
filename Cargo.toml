@@ -1,0 +1,11 @@
+[package]
+name = "rpak"
+version = "0.1.0"
+edition = "2024"
+description = "RPAK is an archive format and asset packaging library"
+authors = ["Maksim Bengraf <octobanon@proton.me>"]
+license = "MIT"
+
+[dependencies]
+lz4_flex = "0.14"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
