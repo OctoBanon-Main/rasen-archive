@@ -5,38 +5,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rasen_archive::{Archive, InputFile, PackOptions, pack_with_options};
+use rasen_archive::{Archive, InputFile, PackMode, PackOptions, pack_with_options};
 
 const XOR_KEY: &[u8] = b"example-key";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     match args.as_slice() {
-        [_, cmd, input_dir, output] if cmd == "pack" => {
-            pack_dir(Path::new(input_dir), Path::new(output), PackOptions::default())?
-        }
-        [_, cmd, input_dir, output, chunk_kib] if cmd == "pack" => {
-            let chunk_kib: usize = chunk_kib.parse()?;
-            pack_dir(
-                Path::new(input_dir),
-                Path::new(output),
-                PackOptions {
-                    chunk_size: chunk_kib.checked_mul(1024).ok_or_else(chunk_size_overflow)?,
-                    ..PackOptions::default()
-                },
-            )?
-        }
-        [_, cmd, input_dir, output, chunk_kib, alignment] if cmd == "pack" => {
-            let chunk_kib: usize = chunk_kib.parse()?;
-            let alignment: u32 = alignment.parse()?;
-            pack_dir(
-                Path::new(input_dir),
-                Path::new(output),
-                PackOptions {
-                    chunk_size: chunk_kib.checked_mul(1024).ok_or_else(chunk_size_overflow)?,
-                    alignment,
-                },
-            )?
+        [_, cmd, input_dir, output, rest @ ..] if cmd == "pack" => {
+            let options = parse_pack_options(rest)?;
+            pack_dir(Path::new(input_dir), Path::new(output), options)?
         }
         [_, cmd, archive] if cmd == "list" => list_archive(Path::new(archive))?,
         [_, cmd, archive, path, output] if cmd == "extract" => {
@@ -47,13 +25,69 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn parse_pack_options(args: &[String]) -> Result<PackOptions, Box<dyn std::error::Error>> {
+    let mut options = PackOptions::default();
+    let mut positional = Vec::new();
+    let mut i = 0;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--debug" => options.mode = PackMode::Debug,
+            "--production" | "--prod" => options.mode = PackMode::Production,
+            "--mode" => {
+                i += 1;
+                let value = args.get(i).ok_or_else(|| invalid_arg("--mode requires a value"))?;
+                options.mode = parse_mode(value)?;
+            }
+            value if value.starts_with("--mode=") => {
+                options.mode = parse_mode(&value["--mode=".len()..])?;
+            }
+            value if value.starts_with('-') => {
+                return Err(invalid_arg(format!("unknown pack option: {value}")).into());
+            }
+            value => positional.push(value),
+        }
+        i += 1;
+    }
+
+    if positional.len() > 2 {
+        return Err(invalid_arg("too many positional pack arguments").into());
+    }
+    if let Some(chunk_kib) = positional.first() {
+        let chunk_kib: usize = chunk_kib.parse()?;
+        options.chunk_size = chunk_kib.checked_mul(1024).ok_or_else(chunk_size_overflow)?;
+    }
+    if let Some(alignment) = positional.get(1) {
+        options.alignment = alignment.parse()?;
+    }
+
+    Ok(options)
+}
+
+fn parse_mode(value: &str) -> Result<PackMode, Box<dyn std::error::Error>> {
+    match value {
+        "debug" => Ok(PackMode::Debug),
+        "production" | "prod" => Ok(PackMode::Production),
+        _ => Err(invalid_arg(format!(
+            "invalid pack mode '{value}', expected debug or production"
+        ))
+        .into()),
+    }
+}
+
+fn invalid_arg(message: impl Into<String>) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
+}
+
 fn chunk_size_overflow() -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::InvalidInput, "chunk size overflow")
+    invalid_arg("chunk size overflow")
 }
 
 fn print_usage() {
     eprintln!("usage:");
-    eprintln!("  rasen-pack pack <input-dir> <archive.rpak> [chunk-kib] [alignment]");
+    eprintln!(
+        "  rasen-pack pack <input-dir> <archive.rpak> [chunk-kib] [alignment] [--debug|--production]"
+    );
     eprintln!("  rasen-pack list <archive.rpak>");
     eprintln!("  rasen-pack extract <archive.rpak> <virtual-path> <output-file>");
 }
@@ -83,9 +117,10 @@ fn pack_dir(
     writer.flush()?;
 
     println!(
-        "packed {} files -> {} (chunk={} KiB, align={})",
+        "packed {} files -> {} (mode={:?}, chunk={} KiB, align={})",
         files.len(),
         output.display(),
+        options.mode,
         options.chunk_size / 1024,
         options.alignment
     );
@@ -96,7 +131,12 @@ fn list_archive(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let file = File::open(path)?;
     let archive = Archive::open(BufReader::new(file), XOR_KEY)?;
     println!(
-        "chunk={} bytes, alignment={} bytes",
+        "mode={}, chunk={} bytes, alignment={} bytes",
+        if archive.paths_stripped() {
+            "production"
+        } else {
+            "debug"
+        },
         archive.chunk_size(),
         archive.alignment()
     );
@@ -106,14 +146,14 @@ fn list_archive(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         } else {
             e.stored_size as f64 / e.original_size as f64
         };
+        let path = if archive.paths_stripped() {
+            "<path stripped>"
+        } else {
+            e.path.as_str()
+        };
         println!(
             "{:016x}  chunks={:<4} stored={:<10} original={:<10} ratio={:.3}  {}",
-            e.path_hash,
-            e.chunk_count,
-            e.stored_size,
-            e.original_size,
-            ratio,
-            e.path
+            e.path_hash, e.chunk_count, e.stored_size, e.original_size, ratio, path
         );
     }
     Ok(())

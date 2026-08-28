@@ -3,10 +3,24 @@ use crate::{
     format::{DEFAULT_ALIGNMENT, DEFAULT_CHUNK_SIZE, validate_alignment, validate_chunk_size},
 };
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+pub enum PackMode {
+    #[default]
+    Debug,
+    Production
+}
+
+impl PackMode {
+    pub(crate) fn strips_paths(self) -> bool {
+        matches!(self, Self::Production)
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub struct PackOptions {
     pub chunk_size: usize,
     pub alignment: u32,
+    pub mode: PackMode
 }
 
 impl Default for PackOptions {
@@ -14,6 +28,7 @@ impl Default for PackOptions {
         Self {
             chunk_size: DEFAULT_CHUNK_SIZE,
             alignment: DEFAULT_ALIGNMENT,
+            mode: PackMode::Debug
         }
     }
 }

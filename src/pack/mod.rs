@@ -9,7 +9,8 @@ use crate::{
     codec::{checksum, compress_block, xor_in_place},
     error::{Error, Result},
     format::{
-        Chunk, HEADER_SIZE, Header, MAX_TOC_RAW_SIZE, MAX_TOC_STORED_SIZE, REQUIRED_HEADER_FLAGS,
+        Chunk, HEADER_FLAG_PATHS_STRIPPED, HEADER_SIZE, Header, MAX_TOC_RAW_SIZE,
+        MAX_TOC_STORED_SIZE, REQUIRED_HEADER_FLAGS,
         TocEntry, VERSION, encode_toc,
         io::{align_writer, usize_to_u32, usize_to_u64},
         write_header,
@@ -17,7 +18,7 @@ use crate::{
     path::normalize_path,
 };
 
-pub use options::PackOptions;
+pub use options::{PackMode, PackOptions};
 
 #[derive(Debug, Clone)]
 pub struct InputFile {
@@ -46,12 +47,22 @@ pub fn pack_with_options<W: Write + Seek>(
     let mut entries = Vec::with_capacity(files.len());
     let mut chunks = Vec::new();
     let mut seen = HashSet::<String>::with_capacity(files.len());
+    let mut seen_hashes = HashSet::<u64>::with_capacity(files.len());
 
     for file in files {
-        let path = normalize_path(&file.path)?;
-        if !seen.insert(path.clone()) {
-            return Err(Error::DuplicatePath(path));
+        let normalized_path = normalize_path(&file.path)?;
+        if !seen.insert(normalized_path.clone()) {
+            return Err(Error::DuplicatePath(normalized_path));
         }
+        let path_hash = checksum(normalized_path.as_bytes());
+        if options.mode.strips_paths() && !seen_hashes.insert(path_hash) {
+            return Err(Error::HashCollision(path_hash));
+        }
+        let stored_path = if options.mode.strips_paths() {
+            String::new()
+        } else {
+            normalized_path
+        };
 
         let first_chunk_index = chunks.len();
         let first_chunk = usize_to_u32(first_chunk_index, "chunk index")?;
@@ -84,10 +95,9 @@ pub fn pack_with_options<W: Write + Seek>(
         }
 
         let chunk_count = usize_to_u32(chunks.len() - first_chunk_index, "entry chunk count")?;
-        let path_hash = checksum(path.as_bytes());
 
         entries.push(TocEntry {
-            path,
+            path: stored_path,
             path_hash,
             original_size: usize_to_u64(file.data.len(), "original entry size")?,
             stored_size: stored_total,
@@ -115,7 +125,12 @@ pub fn pack_with_options<W: Write + Seek>(
 
     let header = Header {
         version: VERSION,
-        flags: REQUIRED_HEADER_FLAGS,
+        flags: REQUIRED_HEADER_FLAGS
+            | if options.mode.strips_paths() {
+                HEADER_FLAG_PATHS_STRIPPED
+            } else {
+                0
+            },
         header_size: HEADER_SIZE as u32,
         alignment: options.alignment,
         chunk_size: usize_to_u32(options.chunk_size, "chunk size")?,

@@ -28,6 +28,7 @@ fn roundtrip_chunked_random_access_and_range() {
         PackOptions {
             chunk_size: 32 * 1024,
             alignment: 64,
+            ..PackOptions::default()
         },
     )
     .unwrap();
@@ -46,4 +47,59 @@ fn roundtrip_chunked_random_access_and_range() {
 
     let chunk = archive.read_chunk("textures/hero.txt", 2).unwrap();
     assert_eq!(chunk, files[0].data[65_536..98_304]);
+}
+
+#[test]
+fn production_mode_strips_paths_and_keeps_hash_lookup() {
+    use rasen_archive::{PackMode, hash_path};
+
+    let key = b"prod-key";
+    let files = vec![
+        InputFile {
+            path: "textures/player.dds".into(),
+            data: vec![7; 8_192],
+        },
+        InputFile {
+            path: "audio/theme.ogg".into(),
+            data: vec![3; 4_096],
+        },
+    ];
+
+    let mut out = Cursor::new(Vec::new());
+    pack_with_options(
+        &mut out,
+        &files,
+        key,
+        PackOptions {
+            mode: PackMode::Production,
+            ..PackOptions::default()
+        },
+    )
+    .unwrap();
+
+    out.set_position(0);
+    let mut archive = Archive::open(out, key).unwrap();
+    assert!(archive.paths_stripped());
+    assert!(archive.entries().iter().all(|entry| entry.path.is_empty()));
+    assert_eq!(archive.read("textures/player.dds").unwrap(), files[0].data);
+
+    let asset_id = hash_path("audio/theme.ogg").unwrap();
+    assert_eq!(archive.read_by_hash(asset_id).unwrap(), files[1].data);
+}
+
+#[test]
+fn debug_mode_keeps_paths() {
+    let key = b"debug-key";
+    let files = vec![InputFile {
+        path: "textures/player.dds".into(),
+        data: b"debug asset".to_vec(),
+    }];
+
+    let mut out = Cursor::new(Vec::new());
+    pack_with_options(&mut out, &files, key, PackOptions::default()).unwrap();
+    out.set_position(0);
+
+    let archive = Archive::open(out, key).unwrap();
+    assert!(!archive.paths_stripped());
+    assert_eq!(archive.entries()[0].path, "textures/player.dds");
 }

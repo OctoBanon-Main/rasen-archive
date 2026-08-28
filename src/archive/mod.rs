@@ -7,7 +7,7 @@ use crate::{
     codec::{checksum, decompress_block_exact, xor_in_place},
     error::{Error, Result},
     format::{
-        Chunk, HEADER_SIZE, TocEntry, decode_toc,
+        Chunk, HEADER_FLAG_PATHS_STRIPPED, HEADER_SIZE, TocEntry, decode_toc,
         io::{u64_to_usize, usize_to_u64},
         read_header, validate_header, validate_layout,
     },
@@ -44,6 +44,7 @@ pub struct Archive<R> {
     index: HashMap<u64, Vec<usize>>,
     chunk_size: u32,
     alignment: u32,
+    paths_stripped: bool,
 }
 
 impl<R: Read + Seek> Archive<R> {
@@ -84,7 +85,13 @@ impl<R: Read + Seek> Archive<R> {
             return Err(Error::Corrupt("TOC checksum mismatch"));
         }
 
-        let (toc_entries, chunks) = decode_toc(&toc_plain, header.entry_count, header.chunk_count)?;
+        let paths_stripped = header.flags & HEADER_FLAG_PATHS_STRIPPED != 0;
+        let (toc_entries, chunks) = decode_toc(
+            &toc_plain,
+            header.entry_count,
+            header.chunk_count,
+            paths_stripped,
+        )?;
         validate_layout(
             &toc_entries,
             &chunks,
@@ -97,7 +104,7 @@ impl<R: Read + Seek> Archive<R> {
         let mut index = HashMap::<u64, Vec<usize>>::with_capacity(entries.len());
         let mut seen = HashSet::<String>::with_capacity(entries.len());
         for (i, entry) in entries.iter().enumerate() {
-            if !seen.insert(entry.path.clone()) {
+            if !paths_stripped && !seen.insert(entry.path.clone()) {
                 return Err(Error::DuplicatePath(entry.path.clone()));
             }
             index.entry(entry.path_hash).or_default().push(i);
@@ -110,6 +117,7 @@ impl<R: Read + Seek> Archive<R> {
             index,
             chunk_size: header.chunk_size,
             alignment: header.alignment,
+            paths_stripped,
         })
     }
 
@@ -125,6 +133,10 @@ impl<R: Read + Seek> Archive<R> {
         self.alignment
     }
 
+    pub fn paths_stripped(&self) -> bool {
+        self.paths_stripped
+    }
+
     pub fn contains(&self, path: &str) -> bool {
         self.find_entry_index(path).is_ok()
     }
@@ -135,18 +147,23 @@ impl<R: Read + Seek> Archive<R> {
 
     pub fn read_by_hash(&mut self, path_hash: u64) -> Result<Vec<u8>> {
         let idx = self.find_entry_index_by_hash(path_hash)?;
-        let path = self.entries[idx].path.clone();
+        let path = if self.paths_stripped {
+            format!("hash:{path_hash:016x}")
+        } else {
+            self.entries[idx].path.clone()
+        };
         self.read_entry_index(idx, &path)
     }
 
     pub fn read(&mut self, path: &str) -> Result<Vec<u8>> {
-        let idx = self.find_entry_index(path)?;
-        let normalized = self.entries[idx].path.clone();
+        let normalized = normalize_lookup_path(path)?;
+        let idx = self.find_entry_index_normalized(&normalized)?;
         self.read_entry_index(idx, &normalized)
     }
 
     pub fn read_chunk(&mut self, path: &str, chunk_index: u32) -> Result<Vec<u8>> {
-        let idx = self.find_entry_index(path)?;
+        let normalized = normalize_lookup_path(path)?;
+        let idx = self.find_entry_index_normalized(&normalized)?;
         let entry = self.entries[idx].clone();
         if chunk_index >= entry.chunk_count {
             return Err(Error::InvalidRange);
@@ -155,11 +172,12 @@ impl<R: Read + Seek> Archive<R> {
             .first_chunk
             .checked_add(chunk_index)
             .ok_or(Error::Corrupt("chunk index overflow"))?;
-        self.read_chunk_by_index(&entry.path, chunk_index, global_chunk)
+        self.read_chunk_by_index(&normalized, chunk_index, global_chunk)
     }
 
     pub fn read_range(&mut self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
-        let idx = self.find_entry_index(path)?;
+        let normalized = normalize_lookup_path(path)?;
+        let idx = self.find_entry_index_normalized(&normalized)?;
         let entry = self.entries[idx].clone();
 
         if offset > entry.original_size {
@@ -192,7 +210,7 @@ impl<R: Read + Seek> Archive<R> {
                 .first_chunk
                 .checked_add(local_chunk)
                 .ok_or(Error::Corrupt("chunk index overflow"))?;
-            let bytes = self.read_chunk_by_index(&entry.path, local_chunk, global_chunk)?;
+            let bytes = self.read_chunk_by_index(&normalized, local_chunk, global_chunk)?;
 
             let chunk_start = u64::from(local_chunk) * chunk_size;
             let chunk_end = chunk_start + usize_to_u64(bytes.len(), "chunk length")?;
@@ -208,16 +226,28 @@ impl<R: Read + Seek> Archive<R> {
 
     fn find_entry_index(&self, path: &str) -> Result<usize> {
         let normalized = normalize_lookup_path(path)?;
+        self.find_entry_index_normalized(&normalized)
+    }
+
+    fn find_entry_index_normalized(&self, normalized: &str) -> Result<usize> {
         let hash = checksum(normalized.as_bytes());
         let bucket = self
             .index
             .get(&hash)
-            .ok_or_else(|| Error::NotFound(normalized.clone()))?;
+            .ok_or_else(|| Error::NotFound(normalized.to_owned()))?;
+
+        if self.paths_stripped {
+            if bucket.len() != 1 {
+                return Err(Error::HashCollision(hash));
+            }
+            return Ok(bucket[0]);
+        }
+
         bucket
             .iter()
             .copied()
             .find(|&i| self.entries[i].path == normalized)
-            .ok_or(Error::NotFound(normalized))
+            .ok_or_else(|| Error::NotFound(normalized.to_owned()))
     }
 
     fn find_entry_index_by_hash(&self, path_hash: u64) -> Result<usize> {

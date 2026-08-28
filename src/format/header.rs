@@ -3,9 +3,10 @@ use std::io::{Read, Write};
 use crate::error::{Error, Result};
 
 use super::{
-    HEADER_SIZE, MAGIC, MAX_TOC_RAW_SIZE, MAX_TOC_STORED_SIZE, REQUIRED_HEADER_FLAGS, VERSION,
+    HEADER_SIZE, KNOWN_HEADER_FLAGS, MAGIC, MAX_TOC_RAW_SIZE, MAX_TOC_STORED_SIZE,
+    REQUIRED_HEADER_FLAGS, VERSION,
     io::{read_u16, read_u32, read_u64},
-    validate_alignment, validate_chunk_size
+    validate_alignment, validate_chunk_size,
 };
 
 #[derive(Debug, Copy, Clone)]
@@ -68,7 +69,9 @@ pub(crate) fn validate_header(header: Header) -> Result<()> {
     if header.header_size != HEADER_SIZE as u32 {
         return Err(Error::UnsupportedHeaderSize(header.header_size));
     }
-    if header.flags != REQUIRED_HEADER_FLAGS {
+    if header.flags & REQUIRED_HEADER_FLAGS != REQUIRED_HEADER_FLAGS
+        || header.flags & !KNOWN_HEADER_FLAGS != 0
+    {
         return Err(Error::UnsupportedFlags(header.flags));
     }
 

@@ -1,13 +1,13 @@
 use crate::{
     codec::checksum,
     error::{Error, Result},
-    path::normalize_path
+    path::normalize_path,
 };
 
 use super::{
     CHUNK_FLAG_LZ4, Chunk, HEADER_SIZE, MAX_PATH_LEN, TOC_CHUNK_FIXED_SIZE, TOC_ENTRY_FIXED_SIZE,
     TOC_MAGIC, TocEntry,
-    io::Cursor
+    io::Cursor,
 };
 
 pub(crate) fn encode_toc(entries: &[TocEntry], chunks: &[Chunk]) -> Result<Vec<u8>> {
@@ -46,6 +46,7 @@ pub(crate) fn decode_toc(
     data: &[u8],
     entry_count: u32,
     chunk_count: u32,
+    paths_stripped: bool,
 ) -> Result<(Vec<TocEntry>, Vec<Chunk>)> {
     let mut cursor = Cursor::new(data);
     if cursor.take(4)? != TOC_MAGIC {
@@ -78,12 +79,23 @@ pub(crate) fn decode_toc(
         }
 
         let path_bytes = cursor.take(path_len)?;
-        let path = std::str::from_utf8(path_bytes)
-            .map_err(|_| Error::Corrupt("entry path is not UTF-8"))?;
-        let path = normalize_path(path)?;
-        if checksum(path.as_bytes()) != path_hash {
-            return Err(Error::Corrupt("entry path hash mismatch"));
-        }
+        let path = if paths_stripped {
+            if path_len != 0 {
+                return Err(Error::Corrupt("production TOC contains an entry path"));
+            }
+            String::new()
+        } else {
+            if path_len == 0 {
+                return Err(Error::Corrupt("debug TOC contains an empty entry path"));
+            }
+            let path = std::str::from_utf8(path_bytes)
+                .map_err(|_| Error::Corrupt("entry path is not UTF-8"))?;
+            let path = normalize_path(path)?;
+            if checksum(path.as_bytes()) != path_hash {
+                return Err(Error::Corrupt("entry path hash mismatch"));
+            }
+            path
+        };
 
         entries.push(TocEntry {
             path,
