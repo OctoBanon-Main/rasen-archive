@@ -52,8 +52,8 @@ The table of contents is serialized, compressed using LZ4, and then XOR-obfuscat
 ### Clone the repository
 
 ```bash
-git clone https://github.com/OctoBanon-Main/rpak
-cd rpak
+git clone https://github.com/OctoBanon-Main/rasen-archive
+cd rasen-archive
 ```
 
 ### Build
@@ -111,7 +111,7 @@ use std::{
     io::BufReader,
 };
 
-use rpak::Archive;
+use rasen_archive::Archive;
 
 const RPAK_KEY: &[u8] = b"example-key";
 
@@ -138,7 +138,7 @@ Asset paths are normalized and hashed using XXH3-64.
 This allows the engine to store a compact `u64` asset identifier instead of performing a string lookup every time an asset is requested.
 
 ```rust
-use rpak::hash_path;
+use rasen_archive::hash_path;
 
 let asset_id = hash_path("textures/player.dds")?;
 ```
@@ -210,7 +210,7 @@ src/
 ├── path.rs             # Path normalization and hashing
 ├── error.rs            # Error types
 └── bin/
-    └── rpak.rs         # Command-line interface
+    └── rasen-pack.rs         # Command-line interface
 
 tests/
 ├── roundtrip.rs        # Public API round-trip tests
