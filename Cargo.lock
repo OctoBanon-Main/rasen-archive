@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rpak"
+name = "rasen-archive"
 version = "0.1.0"
 dependencies = [
  "lz4_flex",

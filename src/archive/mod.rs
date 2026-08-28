@@ -3,17 +3,39 @@ use std::{
     io::{Read, Seek, SeekFrom},
 };
 
-use lz4_flex::block::decompress;
-use xxhash_rust::xxh3::xxh3_64;
-
 use crate::{
+    codec::{checksum, decompress_block_exact, xor_in_place},
     error::{Error, Result},
-    format::{HEADER_SIZE, read_header, validate_header},
+    format::{
+        Chunk, HEADER_SIZE, TocEntry, decode_toc,
+        io::{u64_to_usize, usize_to_u64},
+        read_header, validate_header, validate_layout,
+    },
     path::normalize_lookup_path,
-    toc::{decode_toc, validate_layout},
-    types::{Chunk, Entry},
-    util::{u64_to_usize, usize_to_u64, xor_in_place},
 };
+
+#[derive(Debug, Clone)]
+pub struct Entry {
+    pub path: String,
+    pub path_hash: u64,
+    pub original_size: u64,
+    pub stored_size: u64,
+    pub first_chunk: u32,
+    pub chunk_count: u32,
+}
+
+impl From<TocEntry> for Entry {
+    fn from(entry: TocEntry) -> Self {
+        Self {
+            path: entry.path,
+            path_hash: entry.path_hash,
+            original_size: entry.original_size,
+            stored_size: entry.stored_size,
+            first_chunk: entry.first_chunk,
+            chunk_count: entry.chunk_count,
+        }
+    }
+}
 
 pub struct Archive<R> {
     reader: R,
@@ -53,25 +75,25 @@ impl<R: Read + Seek> Archive<R> {
         xor_in_place(&mut toc_stored, xor_key);
 
         let toc_raw_len = u64_to_usize(header.toc_raw_size, "raw TOC size")?;
-        let toc_plain =
-            decompress(&toc_stored, toc_raw_len).map_err(|e| Error::Lz4(e.to_string()))?;
-        if toc_plain.len() != toc_raw_len {
-            return Err(Error::Corrupt("decompressed TOC size mismatch"));
-        }
-        if xxh3_64(&toc_plain) != header.toc_hash {
+        let toc_plain = decompress_block_exact(
+            &toc_stored,
+            toc_raw_len,
+            "decompressed TOC size mismatch",
+        )?;
+        if checksum(&toc_plain) != header.toc_hash {
             return Err(Error::Corrupt("TOC checksum mismatch"));
         }
 
-        let (mut entries, chunks) =
-            decode_toc(&toc_plain, header.entry_count, header.chunk_count)?;
+        let (toc_entries, chunks) = decode_toc(&toc_plain, header.entry_count, header.chunk_count)?;
         validate_layout(
-            &mut entries,
+            &toc_entries,
             &chunks,
             header.toc_offset,
             header.chunk_size,
             header.alignment,
         )?;
 
+        let entries: Vec<Entry> = toc_entries.into_iter().map(Entry::from).collect();
         let mut index = HashMap::<u64, Vec<usize>>::with_capacity(entries.len());
         let mut seen = HashSet::<String>::with_capacity(entries.len());
         for (i, entry) in entries.iter().enumerate() {
@@ -186,7 +208,7 @@ impl<R: Read + Seek> Archive<R> {
 
     fn find_entry_index(&self, path: &str) -> Result<usize> {
         let normalized = normalize_lookup_path(path)?;
-        let hash = xxh3_64(normalized.as_bytes());
+        let hash = checksum(normalized.as_bytes());
         let bucket = self
             .index
             .get(&hash)
@@ -253,11 +275,11 @@ impl<R: Read + Seek> Archive<R> {
 
         let original_len = u64_to_usize(chunk.original_size, "original chunk size")?;
         let data = if chunk.compressed {
-            let data = decompress(&stored, original_len).map_err(|e| Error::Lz4(e.to_string()))?;
-            if data.len() != original_len {
-                return Err(Error::Corrupt("decompressed chunk size mismatch"));
-            }
-            data
+            decompress_block_exact(
+                &stored,
+                original_len,
+                "decompressed chunk size mismatch",
+            )?
         } else {
             if chunk.stored_size != chunk.original_size {
                 return Err(Error::Corrupt("raw chunk size mismatch"));
@@ -265,7 +287,7 @@ impl<R: Read + Seek> Archive<R> {
             stored
         };
 
-        if xxh3_64(&data) != chunk.checksum {
+        if checksum(&data) != chunk.checksum {
             return Err(Error::ChecksumMismatch {
                 path: path.to_owned(),
                 chunk: local_chunk,

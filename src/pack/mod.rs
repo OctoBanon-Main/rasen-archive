@@ -1,22 +1,29 @@
+mod options;
+
 use std::{
     collections::HashSet,
     io::{Seek, SeekFrom, Write},
 };
 
-use lz4_flex::block::compress;
-use xxhash_rust::xxh3::xxh3_64;
-
 use crate::{
+    codec::{checksum, compress_block, xor_in_place},
     error::{Error, Result},
     format::{
-        HEADER_SIZE, MAX_TOC_RAW_SIZE, MAX_TOC_STORED_SIZE, REQUIRED_HEADER_FLAGS, VERSION,
-        Header, write_header,
+        Chunk, HEADER_SIZE, Header, MAX_TOC_RAW_SIZE, MAX_TOC_STORED_SIZE, REQUIRED_HEADER_FLAGS,
+        TocEntry, VERSION, encode_toc,
+        io::{align_writer, usize_to_u32, usize_to_u64},
+        write_header,
     },
     path::normalize_path,
-    toc::encode_toc,
-    types::{Chunk, Entry, InputFile, PackOptions},
-    util::{align_writer, usize_to_u32, usize_to_u64, xor_in_place},
 };
+
+pub use options::PackOptions;
+
+#[derive(Debug, Clone)]
+pub struct InputFile {
+    pub path: String,
+    pub data: Vec<u8>,
+}
 
 pub fn pack<W: Write + Seek>(writer: &mut W, files: &[InputFile], xor_key: &[u8]) -> Result<()> {
     pack_with_options(writer, files, xor_key, PackOptions::default())
@@ -53,7 +60,7 @@ pub fn pack_with_options<W: Write + Seek>(
         for raw in file.data.chunks(options.chunk_size) {
             align_writer(writer, options.alignment)?;
             let offset = writer.stream_position()?;
-            let compressed = compress(raw);
+            let compressed = compress_block(raw);
             let (stored, is_compressed) = if compressed.len() < raw.len() {
                 (compressed.as_slice(), true)
             } else {
@@ -71,15 +78,15 @@ pub fn pack_with_options<W: Write + Seek>(
                 offset,
                 stored_size,
                 original_size: usize_to_u64(raw.len(), "original chunk size")?,
-                checksum: xxh3_64(raw),
+                checksum: checksum(raw),
                 compressed: is_compressed,
             });
         }
 
         let chunk_count = usize_to_u32(chunks.len() - first_chunk_index, "entry chunk count")?;
-        let path_hash = xxh3_64(path.as_bytes());
+        let path_hash = checksum(path.as_bytes());
 
-        entries.push(Entry {
+        entries.push(TocEntry {
             path,
             path_hash,
             original_size: usize_to_u64(file.data.len(), "original entry size")?,
@@ -96,9 +103,9 @@ pub fn pack_with_options<W: Write + Seek>(
     if toc_raw_size > MAX_TOC_RAW_SIZE {
         return Err(Error::TooLarge("raw TOC"));
     }
-    let toc_hash = xxh3_64(&toc_plain);
+    let toc_hash = checksum(&toc_plain);
 
-    let mut toc_stored = compress(&toc_plain);
+    let mut toc_stored = compress_block(&toc_plain);
     xor_in_place(&mut toc_stored, xor_key);
     let toc_size = usize_to_u64(toc_stored.len(), "stored TOC size")?;
     if toc_size > MAX_TOC_STORED_SIZE {

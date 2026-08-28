@@ -1,4 +1,4 @@
-# RPAK
+# Rasen Archive
 
 **RPAK is an archive format and asset packaging library**
 
@@ -113,7 +113,7 @@ use std::{
 
 use rpak::Archive;
 
-const RPAK_KEY: &[u8] = b"rasen";
+const RPAK_KEY: &[u8] = b"example-key";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file = File::open("content.rpak")?;
@@ -194,17 +194,27 @@ Checksums are validated when data is loaded, allowing corrupted archive data to 
 
 ```text
 src/
-├── lib.rs       # Public API and re-exports
-├── archive.rs   # Archive reader and runtime access
-├── packer.rs    # Archive creation
-├── format.rs    # RPAK format constants and header
-├── toc.rs       # TOC encoding, decoding and validation
-├── types.rs     # Entries, chunks and pack options
-├── path.rs      # Path normalization and hashing
-├── error.rs     # Error types
-├── util.rs      # Binary I/O and utility functions
-├── tests.rs     # Tests
-└── main.rs      # Command-line interface
+├── lib.rs              # Public API and re-exports
+├── archive/
+│   └── mod.rs          # Archive reader and runtime access
+├── pack/
+│   ├── mod.rs          # Archive creation
+│   └── options.rs      # Packing options
+├── format/
+│   ├── mod.rs          # Format constants and validation
+│   ├── header.rs       # Header encoding and decoding
+│   ├── toc.rs          # TOC encoding, decoding and layout validation
+│   ├── model.rs        # Internal on-disk models
+│   └── io.rs           # Binary I/O and alignment helpers
+├── codec.rs            # LZ4, XXH3 and XOR helpers
+├── path.rs             # Path normalization and hashing
+├── error.rs            # Error types
+└── bin/
+    └── rpak.rs         # Command-line interface
+
+tests/
+├── roundtrip.rs        # Public API round-trip tests
+└── corruption.rs       # Corruption and wrong-key tests
 ```
 
 ## License

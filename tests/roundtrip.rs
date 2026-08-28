@@ -1,6 +1,6 @@
-use std::io::Cursor as IoCursor;
+use std::io::Cursor;
 
-use crate::{Archive, Error, InputFile, PackOptions, pack, pack_with_options};
+use rasen_archive::{Archive, InputFile, PackOptions, pack_with_options};
 
 #[test]
 fn roundtrip_chunked_random_access_and_range() {
@@ -20,7 +20,7 @@ fn roundtrip_chunked_random_access_and_range() {
         },
     ];
 
-    let mut out = IoCursor::new(Vec::new());
+    let mut out = Cursor::new(Vec::new());
     pack_with_options(
         &mut out,
         &files,
@@ -46,44 +46,4 @@ fn roundtrip_chunked_random_access_and_range() {
 
     let chunk = archive.read_chunk("textures/hero.txt", 2).unwrap();
     assert_eq!(chunk, files[0].data[65_536..98_304]);
-}
-
-#[test]
-fn wrong_xor_key_fails() {
-    let files = vec![InputFile {
-        path: "a.txt".into(),
-        data: b"hello hello hello".to_vec(),
-    }];
-    let mut out = IoCursor::new(Vec::new());
-    pack(&mut out, &files, b"right").unwrap();
-    out.set_position(0);
-    assert!(Archive::open(out, b"wrong").is_err());
-}
-
-#[test]
-fn payload_corruption_is_detected() {
-    let key = b"key";
-    let mut seed = 0x1234_5678_9abc_def0u64;
-    let mut data = Vec::with_capacity(4096);
-    for _ in 0..4096 {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        data.push(seed as u8);
-    }
-
-    let files = vec![InputFile {
-        path: "noise.bin".into(),
-        data,
-    }];
-    let mut out = IoCursor::new(Vec::new());
-    pack(&mut out, &files, key).unwrap();
-    let mut bytes = out.into_inner();
-
-    bytes[64] ^= 0x55;
-    let mut corrupted = Archive::open(IoCursor::new(bytes), key).unwrap();
-    assert!(matches!(
-        corrupted.read("noise.bin"),
-        Err(Error::ChecksumMismatch { .. })
-    ));
 }

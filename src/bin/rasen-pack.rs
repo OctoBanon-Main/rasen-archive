@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rpak::{Archive, InputFile, PackOptions, pack_with_options};
+use rasen_archive::{Archive, InputFile, PackOptions, pack_with_options};
 
 const XOR_KEY: &[u8] = b"example-key";
 
@@ -53,9 +53,9 @@ fn chunk_size_overflow() -> std::io::Error {
 
 fn print_usage() {
     eprintln!("usage:");
-    eprintln!("  rpak pack <input-dir> <archive.rpak> [chunk-kib] [alignment]");
-    eprintln!("  rpak list <archive.rpak>");
-    eprintln!("  rpak extract <archive.rpak> <virtual-path> <output-file>");
+    eprintln!("  rasen-pack pack <input-dir> <archive.rpak> [chunk-kib] [alignment]");
+    eprintln!("  rasen-pack list <archive.rpak>");
+    eprintln!("  rasen-pack extract <archive.rpak> <virtual-path> <output-file>");
 }
 
 fn pack_dir(

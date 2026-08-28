@@ -23,12 +23,6 @@ fn align_up(value: u64, alignment: u64) -> Result<u64> {
         .ok_or(Error::TooLarge("aligned offset"))
 }
 
-pub(crate) fn xor_in_place(data: &mut [u8], key: &[u8]) {
-    for (i, byte) in data.iter_mut().enumerate() {
-        *byte ^= key[i % key.len()];
-    }
-}
-
 pub(crate) fn read_u16<R: Read>(r: &mut R) -> Result<u16> {
     let mut b = [0u8; 2];
     r.read_exact(&mut b)?;

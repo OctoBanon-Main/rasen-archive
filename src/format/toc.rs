@@ -1,41 +1,40 @@
-use xxhash_rust::xxh3::xxh3_64;
-
 use crate::{
+    codec::checksum,
     error::{Error, Result},
-    format::{
-        CHUNK_FLAG_LZ4, HEADER_SIZE, MAX_PATH_LEN, TOC_CHUNK_FIXED_SIZE, TOC_ENTRY_FIXED_SIZE,
-        TOC_MAGIC,
-    },
-    path::normalize_path,
-    types::{Chunk, Entry},
-    util::Cursor,
+    path::normalize_path
 };
 
-pub(crate) fn encode_toc(entries: &[Entry], chunks: &[Chunk]) -> Result<Vec<u8>> {
+use super::{
+    CHUNK_FLAG_LZ4, Chunk, HEADER_SIZE, MAX_PATH_LEN, TOC_CHUNK_FIXED_SIZE, TOC_ENTRY_FIXED_SIZE,
+    TOC_MAGIC, TocEntry,
+    io::Cursor
+};
+
+pub(crate) fn encode_toc(entries: &[TocEntry], chunks: &[Chunk]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     out.extend_from_slice(&TOC_MAGIC);
 
-    for e in entries {
-        let path = e.path.as_bytes();
+    for entry in entries {
+        let path = entry.path.as_bytes();
         if path.len() > MAX_PATH_LEN {
             return Err(Error::TooLarge("path"));
         }
-        out.extend_from_slice(&e.path_hash.to_le_bytes());
-        out.extend_from_slice(&e.original_size.to_le_bytes());
-        out.extend_from_slice(&e.stored_size.to_le_bytes());
-        out.extend_from_slice(&e.first_chunk.to_le_bytes());
-        out.extend_from_slice(&e.chunk_count.to_le_bytes());
+        out.extend_from_slice(&entry.path_hash.to_le_bytes());
+        out.extend_from_slice(&entry.original_size.to_le_bytes());
+        out.extend_from_slice(&entry.stored_size.to_le_bytes());
+        out.extend_from_slice(&entry.first_chunk.to_le_bytes());
+        out.extend_from_slice(&entry.chunk_count.to_le_bytes());
         out.extend_from_slice(&(path.len() as u16).to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes());
         out.extend_from_slice(path);
     }
 
-    for c in chunks {
-        out.extend_from_slice(&c.offset.to_le_bytes());
-        out.extend_from_slice(&c.stored_size.to_le_bytes());
-        out.extend_from_slice(&c.original_size.to_le_bytes());
-        out.extend_from_slice(&c.checksum.to_le_bytes());
-        let flags = if c.compressed { CHUNK_FLAG_LZ4 } else { 0 };
+    for chunk in chunks {
+        out.extend_from_slice(&chunk.offset.to_le_bytes());
+        out.extend_from_slice(&chunk.stored_size.to_le_bytes());
+        out.extend_from_slice(&chunk.original_size.to_le_bytes());
+        out.extend_from_slice(&chunk.checksum.to_le_bytes());
+        let flags = if chunk.compressed { CHUNK_FLAG_LZ4 } else { 0 };
         out.extend_from_slice(&flags.to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes());
     }
@@ -47,9 +46,9 @@ pub(crate) fn decode_toc(
     data: &[u8],
     entry_count: u32,
     chunk_count: u32,
-) -> Result<(Vec<Entry>, Vec<Chunk>)> {
-    let mut c = Cursor::new(data);
-    if c.take(4)? != TOC_MAGIC {
+) -> Result<(Vec<TocEntry>, Vec<Chunk>)> {
+    let mut cursor = Cursor::new(data);
+    if cursor.take(4)? != TOC_MAGIC {
         return Err(Error::BadTocMagic);
     }
 
@@ -67,25 +66,26 @@ pub(crate) fn decode_toc(
 
     let mut entries = Vec::with_capacity(entries_count);
     for _ in 0..entries_count {
-        let path_hash = c.u64()?;
-        let original_size = c.u64()?;
-        let stored_size = c.u64()?;
-        let first_chunk = c.u32()?;
-        let chunk_count = c.u32()?;
-        let path_len = c.u16()? as usize;
-        let reserved = c.u16()?;
+        let path_hash = cursor.u64()?;
+        let original_size = cursor.u64()?;
+        let stored_size = cursor.u64()?;
+        let first_chunk = cursor.u32()?;
+        let chunk_count = cursor.u32()?;
+        let path_len = cursor.u16()? as usize;
+        let reserved = cursor.u16()?;
         if reserved != 0 {
             return Err(Error::Corrupt("non-zero entry reserved field"));
         }
-        let path_bytes = c.take(path_len)?;
+
+        let path_bytes = cursor.take(path_len)?;
         let path = std::str::from_utf8(path_bytes)
             .map_err(|_| Error::Corrupt("entry path is not UTF-8"))?;
         let path = normalize_path(path)?;
-        if xxh3_64(path.as_bytes()) != path_hash {
+        if checksum(path.as_bytes()) != path_hash {
             return Err(Error::Corrupt("entry path hash mismatch"));
         }
 
-        entries.push(Entry {
+        entries.push(TocEntry {
             path,
             path_hash,
             original_size,
@@ -97,12 +97,12 @@ pub(crate) fn decode_toc(
 
     let mut chunks = Vec::with_capacity(chunks_count);
     for _ in 0..chunks_count {
-        let offset = c.u64()?;
-        let stored_size = c.u64()?;
-        let original_size = c.u64()?;
-        let checksum = c.u64()?;
-        let flags = c.u16()?;
-        let reserved = c.u16()?;
+        let offset = cursor.u64()?;
+        let stored_size = cursor.u64()?;
+        let original_size = cursor.u64()?;
+        let checksum = cursor.u64()?;
+        let flags = cursor.u16()?;
+        let reserved = cursor.u16()?;
         if flags & !CHUNK_FLAG_LZ4 != 0 {
             return Err(Error::Corrupt("unknown chunk flags"));
         }
@@ -119,7 +119,7 @@ pub(crate) fn decode_toc(
         });
     }
 
-    if !c.is_empty() {
+    if !cursor.is_empty() {
         return Err(Error::Corrupt("trailing bytes in TOC"));
     }
 
@@ -127,7 +127,7 @@ pub(crate) fn decode_toc(
 }
 
 pub(crate) fn validate_layout(
-    entries: &mut [Entry],
+    entries: &[TocEntry],
     chunks: &[Chunk],
     toc_offset: u64,
     chunk_size: u32,
@@ -155,6 +155,7 @@ pub(crate) fn validate_layout(
         if chunk.offset < previous_end {
             return Err(Error::Corrupt("overlapping or out-of-order chunks"));
         }
+
         let end = chunk
             .offset
             .checked_add(chunk.stored_size)
@@ -165,7 +166,7 @@ pub(crate) fn validate_layout(
         previous_end = end;
     }
 
-    for entry in entries.iter_mut() {
+    for entry in entries {
         let first = usize::try_from(entry.first_chunk).map_err(|_| Error::TooLarge("chunk index"))?;
         let count = usize::try_from(entry.chunk_count).map_err(|_| Error::TooLarge("chunk count"))?;
         let end = first
@@ -191,6 +192,7 @@ pub(crate) fn validate_layout(
                 return Err(Error::Corrupt("chunk is referenced by multiple entries"));
             }
             used_chunks[global] = true;
+
             raw_total = raw_total
                 .checked_add(chunk.original_size)
                 .ok_or(Error::Corrupt("entry raw size overflow"))?;

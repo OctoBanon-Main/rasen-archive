@@ -1,5 +1,5 @@
 [package]
-name = "rpak"
+name = "rasen-archive"
 version = "0.1.0"
 edition = "2024"
 description = "RPAK is an archive format and asset packaging library"

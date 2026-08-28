@@ -1,37 +1,12 @@
 use std::io::{Read, Write};
 
-use crate::{
-    error::{Error, Result},
-    types::PackOptions,
-    util::{read_u16, read_u32, read_u64}
+use crate::error::{Error, Result};
+
+use super::{
+    HEADER_SIZE, MAGIC, MAX_TOC_RAW_SIZE, MAX_TOC_STORED_SIZE, REQUIRED_HEADER_FLAGS, VERSION,
+    io::{read_u16, read_u32, read_u64},
+    validate_alignment, validate_chunk_size
 };
-
-pub const MAGIC: [u8; 4] = *b"RPAK";
-pub const TOC_MAGIC: [u8; 4] = *b"TOC2";
-pub const VERSION: u16 = 1;
-pub const HEADER_SIZE: u64 = 60;
-
-pub const DEFAULT_CHUNK_SIZE: usize = 64 * 1024;
-pub const DEFAULT_ALIGNMENT: u32 = 16;
-
-pub(crate) const HEADER_FLAG_TOC_LZ4: u16 = 1 << 0;
-pub(crate) const HEADER_FLAG_TOC_XOR: u16 = 1 << 1;
-pub(crate) const HEADER_FLAG_CHUNKED: u16 = 1 << 2;
-pub(crate) const HEADER_FLAG_XXH3: u16 = 1 << 3;
-pub(crate) const REQUIRED_HEADER_FLAGS: u16 = HEADER_FLAG_TOC_LZ4
-    | HEADER_FLAG_TOC_XOR
-    | HEADER_FLAG_CHUNKED
-    | HEADER_FLAG_XXH3;
-
-pub(crate) const CHUNK_FLAG_LZ4: u16 = 1 << 0;
-
-pub(crate) const MAX_TOC_STORED_SIZE: u64 = 256 * 1024 * 1024;
-pub(crate) const MAX_TOC_RAW_SIZE: u64 = 512 * 1024 * 1024;
-pub(crate) const MAX_PATH_LEN: usize = u16::MAX as usize;
-pub(crate) const MAX_CHUNK_SIZE: usize = 64 * 1024 * 1024;
-pub(crate) const MAX_ALIGNMENT: u32 = 1024 * 1024;
-pub(crate) const TOC_ENTRY_FIXED_SIZE: usize = 36;
-pub(crate) const TOC_CHUNK_FIXED_SIZE: usize = 36;
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct Header {
@@ -86,25 +61,25 @@ pub(crate) fn read_header<R: Read>(r: &mut R) -> Result<Header> {
     })
 }
 
-pub(crate) fn validate_header(h: Header) -> Result<()> {
-    if h.version != VERSION {
-        return Err(Error::UnsupportedVersion(h.version));
+pub(crate) fn validate_header(header: Header) -> Result<()> {
+    if header.version != VERSION {
+        return Err(Error::UnsupportedVersion(header.version));
     }
-    if h.header_size != HEADER_SIZE as u32 {
-        return Err(Error::UnsupportedHeaderSize(h.header_size));
+    if header.header_size != HEADER_SIZE as u32 {
+        return Err(Error::UnsupportedHeaderSize(header.header_size));
     }
-    if h.flags != REQUIRED_HEADER_FLAGS {
-        return Err(Error::UnsupportedFlags(h.flags));
+    if header.flags != REQUIRED_HEADER_FLAGS {
+        return Err(Error::UnsupportedFlags(header.flags));
     }
-    PackOptions {
-        chunk_size: usize::try_from(h.chunk_size).map_err(|_| Error::InvalidChunkSize)?,
-        alignment: h.alignment,
-    }
-    .validate()?;
-    if h.toc_size > MAX_TOC_STORED_SIZE {
+
+    let chunk_size = usize::try_from(header.chunk_size).map_err(|_| Error::InvalidChunkSize)?;
+    validate_chunk_size(chunk_size)?;
+    validate_alignment(header.alignment)?;
+
+    if header.toc_size > MAX_TOC_STORED_SIZE {
         return Err(Error::TooLarge("stored TOC"));
     }
-    if h.toc_raw_size > MAX_TOC_RAW_SIZE {
+    if header.toc_raw_size > MAX_TOC_RAW_SIZE {
         return Err(Error::TooLarge("raw TOC"));
     }
     Ok(())
