@@ -17,6 +17,8 @@ It provides fast random access to game assets using chunked LZ4 compression, has
 * Configurable payload alignment
 * XOR-obfuscated table of contents
 * Path normalization and validation
+* Debug/production packing modes
+* Production TOC path stripping (hash-only asset identifiers)
 * Hash collision detection
 
 ## Archive Format
@@ -86,6 +88,28 @@ cargo run --release -- pack ./assets ./content.rpak 256 4096
 
 This example uses 256 KiB chunks and 4096-byte alignment.
 
+### Debug vs production archives
+
+Debug mode is the default and keeps normalized asset paths in the TOC:
+
+```bash
+cargo run --release -- pack ./assets ./content-debug.rpak --debug
+```
+
+Production mode strips path strings from the TOC and stores only their XXH3-64 hashes:
+
+```bash
+cargo run --release -- pack ./assets ./content.rpak --production
+```
+
+`--prod` and `--mode=production` are accepted aliases. Chunk size and alignment can still be combined with the mode switch:
+
+```bash
+cargo run --release -- pack ./assets ./content.rpak 256 4096 --production
+```
+
+Production archives can still be read with `archive.read("path/to/asset")`: the requested path is normalized and hashed at runtime. Because the original path strings are not present, production packing rejects hash collisions instead of relying on path strings to disambiguate them.
+
 ### List archive contents
 
 ```bash
@@ -149,7 +173,18 @@ An asset can then be loaded directly by its hash:
 let data = archive.read_by_hash(asset_id)?;
 ```
 
-Paths are still stored in the TOC so hash collisions can be detected instead of silently resolving to the wrong asset.
+In debug archives, paths are stored in the TOC so hash collisions can be disambiguated. In production archives, paths are stripped; the packer therefore rejects any hash collision before writing the archive.
+
+When packing through the library, select the mode through `PackOptions`:
+
+```rust
+use rasen_archive::{PackMode, PackOptions};
+
+let options = PackOptions {
+    mode: PackMode::Production,
+    ..PackOptions::default()
+};
+```
 
 ## Streaming
 
