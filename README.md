@@ -160,4 +160,4 @@ tests/
 
 ## License
 
-See the `LICENSE` file for licensing information.
+See the [LICENSE](./LICENSE) file for licensing information.
