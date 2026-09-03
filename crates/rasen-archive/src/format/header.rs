@@ -3,8 +3,8 @@ use std::io::{Read, Write};
 use crate::error::{Error, Result};
 
 use super::{
-    HEADER_SIZE, KNOWN_HEADER_FLAGS, MAGIC, MAX_TOC_RAW_SIZE, MAX_TOC_STORED_SIZE,
-    REQUIRED_HEADER_FLAGS, VERSION,
+    HEADER_FLAG_AEAD, HEADER_FLAG_TOC_XOR, HEADER_SIZE, KNOWN_HEADER_FLAGS, MAGIC,
+    MAX_TOC_RAW_SIZE, MAX_TOC_STORED_SIZE, REQUIRED_HEADER_FLAGS, VERSION,
     io::{read_u16, read_u32, read_u64},
     validate_alignment, validate_chunk_size,
 };
@@ -67,8 +67,10 @@ pub(crate) fn validate_header(header: Header) -> Result<()> {
     (header.header_size == HEADER_SIZE as u32)
         .then_some(())
         .ok_or(Error::UnsupportedHeaderSize(header.header_size))?;
+    let protection = header.flags & (HEADER_FLAG_TOC_XOR | HEADER_FLAG_AEAD);
     (header.flags & REQUIRED_HEADER_FLAGS == REQUIRED_HEADER_FLAGS
-        && header.flags & !KNOWN_HEADER_FLAGS == 0)
+        && header.flags & !KNOWN_HEADER_FLAGS == 0
+        && protection.count_ones() == 1)
         .then_some(())
         .ok_or(Error::UnsupportedFlags(header.flags))?;
 

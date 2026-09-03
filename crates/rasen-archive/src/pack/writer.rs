@@ -1,5 +1,3 @@
-mod options;
-
 use std::{
     cmp::Ordering,
     collections::HashSet,
@@ -9,18 +7,20 @@ use std::{
 use lz4_flex::block::{compress_into, get_maximum_output_size};
 
 use crate::{
-    codec::{checksum, xor_in_place},
+    crypto::{TOC_AAD, chunk_aad, derive_key, encrypt, xor_in_place},
     error::{Error, Result},
     format::{
-        Chunk, HEADER_FLAG_PATHS_STRIPPED, HEADER_SIZE, Header, MAX_TOC_RAW_SIZE,
-        MAX_TOC_STORED_SIZE, REQUIRED_HEADER_FLAGS, TocEntry, VERSION, encode_toc,
+        Chunk, HEADER_FLAG_AEAD, HEADER_FLAG_PATHS_STRIPPED, HEADER_FLAG_TOC_XOR, HEADER_SIZE,
+        Header, MAX_TOC_RAW_SIZE, MAX_TOC_STORED_SIZE, REQUIRED_HEADER_FLAGS, TocEntry, VERSION,
+        encode_toc,
         io::{align_up, usize_to_u32, usize_to_u64},
         write_header,
     },
+    hash::checksum,
     path::normalize_path,
 };
 
-pub use options::{PackMode, PackOptions};
+use super::options::{PackOptions, Protection};
 
 #[derive(Debug, Clone)]
 pub struct InputFile {
@@ -37,7 +37,8 @@ pub struct PackSummary {
 
 pub struct Packer<'a, W> {
     writer: &'a mut W,
-    xor_key: &'a [u8],
+    key: &'a [u8],
+    aead_key: Option<[u8; 32]>,
     options: PackOptions,
     entries: Vec<TocEntry>,
     chunks: Vec<Chunk>,
@@ -49,11 +50,10 @@ pub struct Packer<'a, W> {
 }
 
 impl<'a, W: Write + Seek> Packer<'a, W> {
-    pub fn new(writer: &'a mut W, xor_key: &'a [u8], options: PackOptions) -> Result<Self> {
-        (!xor_key.is_empty())
-            .then_some(())
-            .ok_or(Error::EmptyXorKey)?;
+    pub fn new(writer: &'a mut W, key: &'a [u8], options: PackOptions) -> Result<Self> {
+        (!key.is_empty()).then_some(()).ok_or(Error::EmptyXorKey)?;
         let options = options.validate()?;
+        let aead_key = (options.protection == Protection::Aead).then(|| derive_key(key));
         (writer.seek(SeekFrom::End(0))? == 0)
             .then_some(())
             .ok_or(Error::NonEmptyDestination)?;
@@ -74,7 +74,8 @@ impl<'a, W: Write + Seek> Packer<'a, W> {
 
         Ok(Self {
             writer,
-            xor_key,
+            key,
+            aead_key,
             options,
             entries: Vec::new(),
             chunks: Vec::new(),
@@ -125,27 +126,28 @@ impl<'a, W: Write + Seek> Packer<'a, W> {
             let compressed_len = compress_into(&self.raw[..raw_len], &mut self.compressed)
                 .map_err(|error| Error::Lz4(error.to_string()))?;
             let compression = compressed_len.cmp(&raw_len);
-            let (stored_len, is_compressed) = match compression {
-                Ordering::Less => (compressed_len, true),
-                Ordering::Equal | Ordering::Greater => (raw_len, false),
-            };
-            let chunk_checksum = checksum(&self.raw[..raw_len]);
-
             self.align()?;
             let chunk_offset = self.offset;
-            match compression {
-                Ordering::Less => self.writer.write_all(&self.compressed[..compressed_len])?,
-                Ordering::Equal | Ordering::Greater => {
-                    self.writer.write_all(&self.raw[..raw_len])?
-                }
-            }
+            let (plain_stored, is_compressed) = match compression {
+                Ordering::Less => (&self.compressed[..compressed_len], true),
+                Ordering::Equal | Ordering::Greater => (&self.raw[..raw_len], false),
+            };
+            let chunk_checksum = checksum(&self.raw[..raw_len]);
+            let global_chunk = usize_to_u32(self.chunks.len(), "chunk index")?;
+            let encrypted = match &self.aead_key {
+                Some(key) => Some(encrypt(plain_stored, key, &chunk_aad(global_chunk))?),
+                None => None,
+            };
+            let stored = encrypted.as_deref().unwrap_or(plain_stored);
+
+            self.writer.write_all(stored)?;
             self.offset = self
                 .offset
-                .checked_add(usize_to_u64(stored_len, "stored chunk size")?)
+                .checked_add(usize_to_u64(stored.len(), "stored chunk size")?)
                 .ok_or(Error::TooLarge("archive offset"))?;
 
             let original_size = usize_to_u64(raw_len, "original chunk size")?;
-            let stored_size = usize_to_u64(stored_len, "stored chunk size")?;
+            let stored_size = usize_to_u64(stored.len(), "stored chunk size")?;
             original_total = original_total
                 .checked_add(original_size)
                 .ok_or(Error::TooLarge("entry original size"))?;
@@ -204,7 +206,10 @@ impl<'a, W: Write + Seek> Packer<'a, W> {
         let toc_len = compress_into(&toc_plain, &mut toc_stored)
             .map_err(|error| Error::Lz4(error.to_string()))?;
         toc_stored.truncate(toc_len);
-        xor_in_place(&mut toc_stored, self.xor_key);
+        match &self.aead_key {
+            Some(key) => toc_stored = encrypt(&toc_stored, key, TOC_AAD)?,
+            None => xor_in_place(&mut toc_stored, self.key),
+        }
         let toc_size = usize_to_u64(toc_stored.len(), "stored TOC size")?;
         (toc_size <= MAX_TOC_STORED_SIZE)
             .then_some(())
@@ -219,6 +224,10 @@ impl<'a, W: Write + Seek> Packer<'a, W> {
         let header = Header {
             version: VERSION,
             flags: REQUIRED_HEADER_FLAGS
+                | match self.options.protection {
+                    Protection::Xor => HEADER_FLAG_TOC_XOR,
+                    Protection::Aead => HEADER_FLAG_AEAD,
+                }
                 | (HEADER_FLAG_PATHS_STRIPPED * u16::from(self.options.mode.strips_paths())),
             header_size: HEADER_SIZE as u32,
             alignment: self.options.alignment,
@@ -259,17 +268,17 @@ impl<'a, W: Write + Seek> Packer<'a, W> {
     }
 }
 
-pub fn pack<W: Write + Seek>(writer: &mut W, files: &[InputFile], xor_key: &[u8]) -> Result<()> {
-    pack_with_options(writer, files, xor_key, PackOptions::default())
+pub fn pack<W: Write + Seek>(writer: &mut W, files: &[InputFile], key: &[u8]) -> Result<()> {
+    pack_with_options(writer, files, key, PackOptions::default())
 }
 
 pub fn pack_with_options<W: Write + Seek>(
     writer: &mut W,
     files: &[InputFile],
-    xor_key: &[u8],
+    key: &[u8],
     options: PackOptions,
 ) -> Result<()> {
-    let mut packer = Packer::new(writer, xor_key, options)?;
+    let mut packer = Packer::new(writer, key, options)?;
     for file in files {
         packer.add_reader(&file.path, &mut file.data.as_slice())?;
     }

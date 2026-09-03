@@ -5,8 +5,9 @@ game/runtime asset archives.
 
 RPAK v1 stores independently readable RAW/LZ4 chunks, an LZ4-compressed
 table of contents, XXH3-64 non-cryptographic corruption detection
-checks, and normalized path hashes. See [SPEC.md](./SPEC.md) for wire
-details.
+checks, normalized path hashes, and selectable XOR obfuscation or
+XChaCha20-Poly1305 authenticated encryption. See [SPEC.md](./SPEC.md)
+for wire details.
 
 ## Properties
 
@@ -18,58 +19,65 @@ details.
 -   Configurable archive-open resource limits
 -   Debug archives may include paths; production archives may omit paths
     and store hash-only entries
+-   Optional AEAD protection for both TOC and chunks, with BLAKE3 key
+    derivation
 -   Deterministic CLI ordering by normalized UTF-8 virtual path
 -   Failure-safe same-directory temporary output replacement
 -   Compatibility with the current RPAK v1 on-disk format
 
 ## Build And Check
 
+Workspace layout:
+
+-   `crates/rasen-archive`: format, pack/read APIs, tests, and benchmarks
+-   `crates/rasen-pack`: Clap-based CLI packer and archive inspector
+
 ``` bash
-cargo build --release
-cargo test --all-targets --all-features
+cargo build --workspace --release
+cargo test --workspace --all-targets --all-features
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
 ## CLI
 
-Pack a directory with default 64 KiB chunks, 16-byte alignment, and
-debug paths:
+Pack a directory with default 64 KiB chunks, 16-byte alignment, debug
+paths, and XOR protection:
 
 ``` bash
-cargo run --release -- pack ./assets ./content.rpak
+cargo run -p rasen-pack --release -- pack ./assets ./content.rpak
 ```
 
-Production mode strips paths. Optional positional values set chunk KiB
-and alignment:
+Production mode strips paths. Packing options use named values:
 
 ``` bash
-cargo run --release -- pack ./assets ./content.rpak 256 4096 --production
+cargo run -p rasen-pack --release -- pack ./assets ./content.rpak --mode=production --protection=aead --chunk-kib=256 --alignment=4096 --key=project-key
 ```
 
 List and extract:
 
 ``` bash
-cargo run --release -- list ./content.rpak
-cargo run --release -- extract ./content.rpak textures/player.dds ./player.dds
+cargo run -p rasen-pack --release -- list ./content.rpak
+cargo run -p rasen-pack --release -- extract ./content.rpak textures/player.dds ./player.dds
 ```
 
-All commands accept `--key <value>` or `--key=<value>`. `RPAK_XOR_KEY`
-is used when the option is absent. The compatibility default is
-`example-key`.
+All commands accept `--key <value>` or `--key=<value>`. `RPAK_KEY` is
+used when the option is absent. The `example-key` default remains for
+compatibility.
 
 The default key exists only for compatibility and testing. It must not
 be considered a secret or used as protection for shipped content.
 
 ``` bash
-cargo run --release -- list ./content.rpak --key project-key
+cargo run -p rasen-pack --release -- list ./content.rpak --key project-key
 ```
 
-The same key used for packing is needed to decode the TOC. XOR is
-obfuscation, not encryption: it provides no confidentiality or
-authentication, and a key embedded in a client executable is not secret.
-XXH3 provides non-cryptographic corruption detection only; an attacker
-can modify data and recompute checksums.
+The same key used for packing is needed for reading. XOR protects only
+the TOC and remains obfuscation without confidentiality or authentication.
+AEAD protects the TOC and every chunk with XChaCha20-Poly1305; BLAKE3
+derives its 256-bit key from supplied key material. This is not a
+password-hard KDF, so use high-entropy key material. A key embedded in a
+client executable is not secret.
 
 CLI discovery does not follow symlinks. Filesystem names must be valid
 UTF-8. Existing destination and temporary output files are excluded when
@@ -125,11 +133,15 @@ retained until the archive is completed.
 
 ``` rust
 use std::{fs::File, io::BufWriter};
-use rasen_archive::{PackOptions, Packer};
+use rasen_archive::{PackOptions, Packer, Protection};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut output = BufWriter::new(File::create("content.rpak.tmp")?);
-    let mut packer = Packer::new(&mut output, b"project-key", PackOptions::default())?;
+    let options = PackOptions {
+        protection: Protection::Aead,
+        ..PackOptions::default()
+    };
+    let mut packer = Packer::new(&mut output, b"project-key", options)?;
     let mut source = File::open("assets/textures/player.dds")?;
     packer.add_reader("textures/player.dds", &mut source)?;
     let summary = packer.finish()?;
@@ -145,7 +157,9 @@ wrappers over `Packer`.
 
 ## Security
 
-RPAK is an asset container format, not a security boundary.
+AEAD archives provide confidentiality and authentication when key
+material remains secret. Archive parsing still treats all input as
+untrusted.
 
 Implementations must protect against:
 
@@ -156,9 +170,6 @@ Implementations must protect against:
 -   invalid offsets;
 -   unexpected resource usage.
 
-Cryptographic authentication and confidentiality are intentionally
-outside the scope of the format.
-
 See `SPEC.md` for wire-format rules and `SECURITY.md` for threat model
 details.
 
@@ -166,8 +177,8 @@ details.
 
 ``` bash
 cargo fuzz run archive_open -- -max_total_time=60
-cargo bench --bench scaling
-RPAK_BENCH_LARGE=1 cargo bench --bench scaling
+cargo bench -p rasen-archive --bench scaling
+RPAK_BENCH_LARGE=1 cargo bench -p rasen-archive --bench scaling
 ```
 
 Fuzz targets must never panic when processing malformed archive input.

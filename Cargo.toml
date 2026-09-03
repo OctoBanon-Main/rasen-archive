@@ -1,15 +1,10 @@
-[package]
-name = "rasen-archive"
-version = "0.4.0"
+[workspace]
+resolver = "3"
+members = ["crates/rasen-archive", "crates/rasen-packer"]
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.5.0"
 edition = "2024"
-description = "RPAK is an archive format and asset packaging library"
 authors = ["Maksim Bengraf <octobanon@proton.me>"]
 license = "MIT"
-
-[dependencies]
-lz4_flex = "0.14"
-xxhash-rust = { version = "0.8", features = ["xxh3"] }
-
-[[bench]]
-name = "scaling"
-harness = false

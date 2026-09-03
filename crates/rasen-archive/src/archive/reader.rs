@@ -1,20 +1,22 @@
-mod source;
-
 use std::{cmp::Ordering, collections::HashSet, io::Cursor};
 
 use crate::{
-    codec::{checksum, decompress_block_exact, decompress_into_exact, xor_in_place},
+    compression::{decompress_block_exact, decompress_into_exact},
+    crypto::{TOC_AAD, chunk_aad, decrypt, derive_key, xor_in_place},
     error::{Error, Result},
     format::{
-        Chunk, HEADER_FLAG_PATHS_STRIPPED, HEADER_SIZE, MAX_PATH_LEN, MAX_TOC_RAW_SIZE,
-        MAX_TOC_STORED_SIZE, TOC_CHUNK_FIXED_SIZE, TOC_ENTRY_FIXED_SIZE, TocEntry, decode_toc,
+        Chunk, HEADER_FLAG_AEAD, HEADER_FLAG_PATHS_STRIPPED, HEADER_SIZE, MAX_PATH_LEN,
+        MAX_TOC_RAW_SIZE, MAX_TOC_STORED_SIZE, TOC_CHUNK_FIXED_SIZE, TOC_ENTRY_FIXED_SIZE,
+        TocEntry, decode_toc,
         io::{u64_to_usize, usize_to_u64},
         read_header, validate_header, validate_layout,
     },
+    hash::checksum,
+    pack::Protection,
     path::{AssetId, normalize_lookup_path},
 };
 
-pub use source::RandomAccessRead;
+use super::source::RandomAccessRead;
 
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -173,6 +175,8 @@ pub struct Archive<R> {
     chunk_size: u32,
     alignment: u32,
     paths_stripped: bool,
+    protection: Protection,
+    aead_key: Option<[u8; 32]>,
     max_chunks_per_operation: u32,
 }
 
@@ -192,14 +196,12 @@ impl ChecksumLabel<'_> {
 }
 
 impl<R: RandomAccessRead> Archive<R> {
-    pub fn open(source: R, xor_key: &[u8]) -> Result<Self> {
-        Self::open_with_limits(source, xor_key, ArchiveLimits::default())
+    pub fn open(source: R, key: &[u8]) -> Result<Self> {
+        Self::open_with_limits(source, key, ArchiveLimits::default())
     }
 
-    pub fn open_with_limits(source: R, xor_key: &[u8], limits: ArchiveLimits) -> Result<Self> {
-        (!xor_key.is_empty())
-            .then_some(())
-            .ok_or(Error::EmptyXorKey)?;
+    pub fn open_with_limits(source: R, key: &[u8], limits: ArchiveLimits) -> Result<Self> {
+        (!key.is_empty()).then_some(()).ok_or(Error::EmptyXorKey)?;
 
         let limits = limits.clamped();
         let mut header_bytes = [0u8; HEADER_SIZE as usize];
@@ -207,6 +209,11 @@ impl<R: RandomAccessRead> Archive<R> {
         let header = read_header(&mut Cursor::new(header_bytes))?;
         validate_header(header)?;
         validate_limits(header, limits)?;
+        let protection = match header.flags & HEADER_FLAG_AEAD != 0 {
+            true => Protection::Aead,
+            false => Protection::Xor,
+        };
+        let aead_key = (protection == Protection::Aead).then(|| derive_key(key));
 
         let file_len = source.len()?;
         let toc_end = header
@@ -229,7 +236,10 @@ impl<R: RandomAccessRead> Archive<R> {
             .map_err(|_| Error::TooLarge("stored TOC allocation"))?;
         toc_stored.resize(toc_len, 0);
         source.read_exact_at(header.toc_offset, &mut toc_stored)?;
-        xor_in_place(&mut toc_stored, xor_key);
+        match &aead_key {
+            Some(aead_key) => toc_stored = decrypt(&toc_stored, aead_key, TOC_AAD)?,
+            None => xor_in_place(&mut toc_stored, key),
+        }
 
         let toc_raw_len = u64_to_usize(header.toc_raw_size, "raw TOC size")?;
         let toc_plain =
@@ -254,6 +264,7 @@ impl<R: RandomAccessRead> Archive<R> {
             header.toc_offset,
             header.chunk_size,
             header.alignment,
+            protection == Protection::Aead,
             limits.max_total_decompressed_bytes,
         )?;
 
@@ -283,6 +294,8 @@ impl<R: RandomAccessRead> Archive<R> {
             chunk_size: header.chunk_size,
             alignment: header.alignment,
             paths_stripped,
+            protection,
+            aead_key,
             max_chunks_per_operation: limits.max_chunks_per_operation,
         })
     }
@@ -310,6 +323,10 @@ impl<R: RandomAccessRead> Archive<R> {
 
     pub fn paths_stripped(&self) -> bool {
         self.paths_stripped
+    }
+
+    pub fn protection(&self) -> Protection {
+        self.protection
     }
 
     pub fn verify(&self) -> Result<()> {
@@ -757,19 +774,32 @@ impl<R: RandomAccessRead> Archive<R> {
                 actual: dst.len(),
             });
         }
-        match chunk.compressed {
-            true => {
+        match (self.aead_key.as_ref(), chunk.compressed) {
+            (None, false) => self.source.read_exact_at(chunk.offset, dst)?,
+            (aead_key, compressed) => {
                 let stored_len = u64_to_usize(chunk.stored_size, "stored chunk size")?;
                 resize_buffer(stored, stored_len, "stored chunk allocation")?;
                 self.source
                     .read_exact_at(chunk.offset, &mut stored[..stored_len])?;
-                decompress_into_exact(
-                    &stored[..stored_len],
-                    dst,
-                    "decompressed chunk size mismatch",
-                )?;
+                let decrypted = match aead_key {
+                    Some(key) => Some(decrypt(
+                        &stored[..stored_len],
+                        key,
+                        &chunk_aad(global_chunk),
+                    )?),
+                    None => None,
+                };
+                let plain = decrypted.as_deref().unwrap_or(&stored[..stored_len]);
+                match compressed {
+                    true => decompress_into_exact(plain, dst, "decompressed chunk size mismatch")?,
+                    false => {
+                        (plain.len() == dst.len())
+                            .then_some(())
+                            .ok_or(Error::Corrupt("decrypted chunk size mismatch"))?;
+                        dst.copy_from_slice(plain);
+                    }
+                }
             }
-            false => self.source.read_exact_at(chunk.offset, dst)?,
         }
         (checksum(dst) == chunk.checksum)
             .then_some(())

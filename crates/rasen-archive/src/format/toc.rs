@@ -1,6 +1,6 @@
 use crate::{
-    codec::checksum,
     error::{Error, Result},
+    hash::checksum,
     path::normalize_path,
 };
 
@@ -188,22 +188,30 @@ pub(crate) fn validate_layout(
     toc_offset: u64,
     chunk_size: u32,
     alignment: u32,
+    aead: bool,
     max_total_decompressed_bytes: u64,
 ) -> Result<()> {
     let mut previous_end = HEADER_SIZE;
     let mut total_decompressed = 0u64;
 
     for chunk in chunks {
+        let payload_size = match aead {
+            true => chunk
+                .stored_size
+                .checked_sub(crate::crypto::AEAD_OVERHEAD)
+                .ok_or(Error::Corrupt("encrypted chunk is truncated"))?,
+            false => chunk.stored_size,
+        };
         (chunk.original_size != 0 && chunk.original_size <= u64::from(chunk_size))
             .then_some(())
             .ok_or(Error::Corrupt("invalid chunk original size"))?;
-        (chunk.stored_size != 0 && chunk.stored_size <= chunk.original_size)
+        (payload_size != 0 && payload_size <= chunk.original_size)
             .then_some(())
             .ok_or(Error::Corrupt("invalid stored chunk size"))?;
-        (!chunk.compressed || chunk.stored_size < chunk.original_size)
+        (!chunk.compressed || payload_size < chunk.original_size)
             .then_some(())
             .ok_or(Error::Corrupt("non-beneficial compressed chunk"))?;
-        (chunk.compressed || chunk.stored_size == chunk.original_size)
+        (chunk.compressed || payload_size == chunk.original_size)
             .then_some(())
             .ok_or(Error::Corrupt("raw chunk size mismatch"))?;
         (chunk.offset >= HEADER_SIZE && chunk.offset.is_multiple_of(u64::from(alignment)))

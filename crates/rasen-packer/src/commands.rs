@@ -1,5 +1,4 @@
 use std::{
-    env,
     ffi::OsString,
     fs::{self, File},
     io::{BufWriter, Write},
@@ -8,149 +7,17 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use rasen_archive::{Archive, ArchiveLimits, PackMode, PackOptions, Packer, normalize_path};
-
-const DEFAULT_XOR_KEY: &str = "example-key";
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args: Vec<String> = env::args().skip(1).collect();
-    let key = take_key(&mut args)?;
-    match args.as_slice() {
-        [flag] if flag == "--help" || flag == "-h" => print_usage(),
-        [flag] if flag == "--version" || flag == "-V" => {
-            println!("rasen-pack {}", env!("CARGO_PKG_VERSION"));
-        }
-        [cmd, input_dir, output, rest @ ..] if cmd == "pack" => {
-            let options = parse_pack_options(rest)?;
-            pack_dir(
-                Path::new(input_dir),
-                Path::new(output),
-                options,
-                key.as_bytes(),
-            )?
-        }
-        [cmd, archive] if cmd == "list" => list_archive(Path::new(archive), key.as_bytes())?,
-        [cmd, archive] if cmd == "verify" => verify_archive(Path::new(archive), key.as_bytes())?,
-        [cmd, archive] if cmd == "info" => info_archive(Path::new(archive), key.as_bytes())?,
-        [cmd, archive, virtual_path, output] if cmd == "extract" => extract_one(
-            Path::new(archive),
-            virtual_path,
-            Path::new(output),
-            key.as_bytes(),
-        )?,
-        _ => return Err(invalid_arg("invalid command or arguments; use --help").into()),
-    }
-    Ok(())
-}
-
-fn take_key(args: &mut Vec<String>) -> Result<String, Box<dyn std::error::Error>> {
-    let mut key = None;
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--key" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| invalid_arg("--key requires a value"))?
-                    .clone();
-                args.drain(index..=index + 1);
-                key = Some(value);
-            }
-            value if value.starts_with("--key=") => {
-                key = Some(value["--key=".len()..].to_owned());
-                args.remove(index);
-            }
-            _ => index += 1,
-        }
-    }
-    Ok(key
-        .or_else(|| env::var("RPAK_XOR_KEY").ok())
-        .unwrap_or_else(|| DEFAULT_XOR_KEY.to_owned()))
-}
-
-fn parse_pack_options(args: &[String]) -> Result<PackOptions, Box<dyn std::error::Error>> {
-    let mut options = PackOptions::default();
-    let mut positional = Vec::new();
-    let mut i = 0;
-
-    while i < args.len() {
-        match args[i].as_str() {
-            "--debug" => options.mode = PackMode::Debug,
-            "--production" | "--prod" => options.mode = PackMode::Production,
-            "--mode" => {
-                i += 1;
-                let value = args
-                    .get(i)
-                    .ok_or_else(|| invalid_arg("--mode requires a value"))?;
-                options.mode = parse_mode(value)?;
-            }
-            value if value.starts_with("--mode=") => {
-                options.mode = parse_mode(&value["--mode=".len()..])?;
-            }
-            value if value.starts_with('-') => {
-                return Err(invalid_arg(format!("unknown pack option: {value}")).into());
-            }
-            value => positional.push(value),
-        }
-        i += 1;
-    }
-
-    match positional.as_slice() {
-        [] => {}
-        [chunk_kib] => {
-            options.chunk_size = chunk_kib
-                .parse::<usize>()?
-                .checked_mul(1024)
-                .ok_or_else(chunk_size_overflow)?;
-        }
-        [chunk_kib, alignment] => {
-            options.chunk_size = chunk_kib
-                .parse::<usize>()?
-                .checked_mul(1024)
-                .ok_or_else(chunk_size_overflow)?;
-            options.alignment = alignment.parse()?;
-        }
-        _ => return Err(invalid_arg("too many positional pack arguments").into()),
-    }
-
-    Ok(options)
-}
-
-fn parse_mode(value: &str) -> Result<PackMode, Box<dyn std::error::Error>> {
-    match value {
-        "debug" => Ok(PackMode::Debug),
-        "production" | "prod" => Ok(PackMode::Production),
-        _ => Err(invalid_arg(format!(
-            "invalid pack mode '{value}', expected debug or production"
-        ))
-        .into()),
-    }
-}
+use rasen_archive::{Archive, ArchiveLimits, PackOptions, Packer, normalize_path};
 
 fn invalid_arg(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
 }
 
-fn chunk_size_overflow() -> std::io::Error {
-    invalid_arg("chunk size overflow")
-}
-
-fn print_usage() {
-    println!("usage:");
-    println!(
-        "  rasen-pack pack <input-dir> <archive.rpak> [chunk-kib] [alignment] [--debug|--production] [--key <key>]"
-    );
-    println!("  rasen-pack list <archive.rpak> [--key <key>]");
-    println!("  rasen-pack verify <archive.rpak> [--key <key>]");
-    println!("  rasen-pack info <archive.rpak> [--key <key>]");
-    println!("  rasen-pack extract <archive.rpak> <virtual-path> <output-file> [--key <key>]");
-}
-
-fn pack_dir(
+pub(crate) fn pack_dir(
     root: &Path,
     output: &Path,
     options: PackOptions,
-    xor_key: &[u8],
+    key: &[u8],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = fs::canonicalize(root)?;
     let output = normalized_output_path(output)?;
@@ -166,7 +33,7 @@ fn pack_dir(
     let result = (|| {
         let mut writer = BufWriter::new(temp_file);
         let summary = {
-            let mut packer = Packer::new(&mut writer, xor_key, options)?;
+            let mut packer = Packer::new(&mut writer, key, options)?;
             for (virtual_path, disk_path) in &files {
                 let mut source = File::open(disk_path)?;
                 packer.add_reader(virtual_path, &mut source)?;
@@ -195,27 +62,29 @@ fn pack_dir(
     };
 
     println!(
-        "packed {} files, {} chunks, {} bytes -> {} (mode={:?}, chunk={} KiB, align={})",
+        "packed {} files, {} chunks, {} bytes -> {} (mode={}, protection={}, chunk={} KiB, align={})",
         summary.entry_count,
         summary.chunk_count,
         summary.archive_len,
         output.display(),
         options.mode,
+        options.protection,
         options.chunk_size / 1024,
         options.alignment
     );
     Ok(())
 }
 
-fn list_archive(path: &Path, xor_key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn list_archive(path: &Path, key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let archive =
-        Archive::open_with_limits(File::open(path)?, xor_key, ArchiveLimits::tooling_default())?;
+        Archive::open_with_limits(File::open(path)?, key, ArchiveLimits::tooling_default())?;
     println!(
-        "mode={}, chunk={} bytes, alignment={} bytes",
+        "mode={}, protection={}, chunk={} bytes, alignment={} bytes\n",
         match archive.paths_stripped() {
             true => "production",
             false => "debug",
         },
+        archive.protection(),
         archive.chunk_size(),
         archive.alignment()
     );
@@ -225,7 +94,7 @@ fn list_archive(path: &Path, xor_key: &[u8]) -> Result<(), Box<dyn std::error::E
             size => entry.stored_size as f64 / size as f64,
         };
         let path = match archive.paths_stripped() {
-            true => "<path stripped>",
+            true => "",
             false => entry.path.as_str(),
         };
         println!(
@@ -236,9 +105,9 @@ fn list_archive(path: &Path, xor_key: &[u8]) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-fn verify_archive(path: &Path, xor_key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn verify_archive(path: &Path, key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let archive =
-        Archive::open_with_limits(File::open(path)?, xor_key, ArchiveLimits::tooling_default())?;
+        Archive::open_with_limits(File::open(path)?, key, ArchiveLimits::tooling_default())?;
     archive.verify()?;
     let mut chunk_count = 0u64;
     for entry in archive.entries() {
@@ -253,10 +122,10 @@ fn verify_archive(path: &Path, xor_key: &[u8]) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-fn info_archive(path: &Path, xor_key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn info_archive(path: &Path, key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let file = File::open(path)?;
     let archive_size = file.metadata()?.len();
-    let archive = Archive::open_with_limits(file, xor_key, ArchiveLimits::tooling_default())?;
+    let archive = Archive::open_with_limits(file, key, ArchiveLimits::tooling_default())?;
     let mut chunk_count = 0u64;
     let mut original_bytes = 0u64;
     let mut stored_bytes = 0u64;
@@ -294,18 +163,19 @@ fn info_archive(path: &Path, xor_key: &[u8]) -> Result<(), Box<dyn std::error::E
     println!("stored_bytes={stored_bytes}");
     println!("compression_ratio={ratio:.6}");
     println!("paths_stripped={}", archive.paths_stripped());
+    println!("protection={}", archive.protection());
     Ok(())
 }
 
-fn extract_one(
+pub(crate) fn extract_one(
     archive_path: &Path,
     virtual_path: &str,
     output: &Path,
-    xor_key: &[u8],
+    key: &[u8],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let archive = Archive::open_with_limits(
         File::open(archive_path)?,
-        xor_key,
+        key,
         ArchiveLimits::tooling_default(),
     )?;
     fs::write(output, archive.read(virtual_path)?)?;
@@ -389,7 +259,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let path = env::temp_dir().join(format!(
+        let path = std::env::temp_dir().join(format!(
             "rasen-pack-{name}-{}-{}",
             process::id(),
             SystemTime::now()
@@ -487,7 +357,7 @@ mod tests {
         fs::write(root.join("asset.bin"), vec![7; 4096]).unwrap();
         let output = root.join("content.rpak");
         let options = PackOptions {
-            mode: PackMode::Production,
+            mode: rasen_archive::PackMode::Production,
             ..PackOptions::default()
         };
         pack_dir(&root, &output, options, b"test-key").unwrap();

@@ -1,0 +1,18 @@
+[package]
+name = "rasen-archive"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "RPAK archive format and runtime library"
+
+[dependencies]
+blake3 = "1.8.7"
+chacha20poly1305 = "0.11.0"
+getrandom = "0.4.3"
+lz4_flex = "0.14"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+[[bench]]
+name = "scaling"
+harness = false

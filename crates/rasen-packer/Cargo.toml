@@ -1,0 +1,11 @@
+[package]
+name = "rasen-packer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CLI packer and inspector for RPAK archives"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive", "env"] }
+rasen-archive = { path = "../rasen-archive" }

@@ -7,15 +7,15 @@ game runtime environments.
 
 The format provides:
 
--   deterministic asset storage;
+-   deterministic asset ordering (AEAD ciphertext is randomized);
 -   chunk-based asset loading;
 -   optional LZ4 compression;
 -   integrity verification using non-cryptographic hashes;
+-   optional XChaCha20-Poly1305 authenticated encryption;
 -   fast random access through a table of contents.
 
-RPAK does not provide cryptographic security. Checksums and obfuscation
-features are not intended for authentication, confidentiality, or
-protection against malicious modification.
+XOR mode provides obfuscation only. AEAD mode provides authentication
+and confidentiality when supplied key material remains secret.
 
 ------------------------------------------------------------------------
 
@@ -45,6 +45,10 @@ The header contains:
 -   TOC checksum.
 
 Readers must reject unsupported versions.
+
+The protection flags are `TOC_XOR = 1 << 1` and `AEAD = 1 << 5`.
+Exactly one must be set. AEAD applies to both the TOC and chunks; XOR
+retains the original behavior and applies only to the TOC.
 
 ------------------------------------------------------------------------
 
@@ -80,9 +84,16 @@ The compression pipeline is:
     optional LZ4 compression
             |
             v
+    optional AEAD encryption
+            |
+            v
     stored chunk
 
 Compressed chunks must declare their original size.
+
+In AEAD mode, stored chunk size includes the 40-byte nonce and tag
+overhead. Compression rules apply to the plaintext payload size after
+subtracting this overhead.
 
 Readers must verify that decompressed output matches the expected size.
 
@@ -109,13 +120,29 @@ The TOC storage pipeline is:
     LZ4 compression
             |
             v
-    optional XOR obfuscation
+    XOR obfuscation or AEAD encryption
             |
             v
     stored TOC
 
 The XOR layer is only a lightweight obfuscation mechanism and is not
 cryptographic protection.
+
+## AEAD Protection
+
+AEAD uses XChaCha20-Poly1305. Each protected block is encoded as:
+
+    nonce[24] || ciphertext[n] || tag[16]
+
+Every nonce is generated independently using the operating system CSPRNG.
+The 256-bit cipher key is produced with BLAKE3 `derive_key` using context
+`rasen-archive XChaCha20-Poly1305 key v1` and the caller-supplied key
+material. This derivation is not password-hard.
+
+The TOC associated data is the ASCII string `RPAK-TOC-v1`. Chunk
+associated data is the ASCII string `RPAK-CHN` followed by the global
+chunk index as a little-endian `u32`. Associated data prevents valid
+encrypted chunks from being substituted at another chunk index.
 
 ------------------------------------------------------------------------
 
@@ -139,12 +166,13 @@ guarantees.
 
 # Integrity Checking
 
-Checksums are used to detect accidental corruption.
+Checksums are used to detect accidental corruption. AEAD tags additionally
+authenticate protected data before decompression or checksum validation.
 
 Validation occurs after decoding and before returning data to the
 caller.
 
-Checksums do not prevent:
+In XOR mode, checksums do not prevent:
 
 -   malicious archive creation;
 -   excessive memory usage;
@@ -211,7 +239,8 @@ Malformed archives must not cause:
 
 # Security Considerations
 
-RPAK is designed as an asset container, not as a security boundary.
+AEAD security depends on high-entropy secret key material and nonce
+generation. XOR archives remain unauthenticated and unencrypted.
 
 Implementations must protect against:
 

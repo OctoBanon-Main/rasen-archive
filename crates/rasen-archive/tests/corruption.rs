@@ -71,6 +71,16 @@ fn malformed_headers_are_rejected() {
         assert!(Archive::open(Cursor::new(malformed), b"key").is_err());
     }
 
+    let flags = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
+    for invalid_flags in [flags & !(1 << 1), flags | (1 << 5)] {
+        let mut malformed = bytes.clone();
+        malformed[6..8].copy_from_slice(&invalid_flags.to_le_bytes());
+        assert!(matches!(
+            Archive::open(Cursor::new(malformed), b"key"),
+            Err(Error::UnsupportedFlags(_))
+        ));
+    }
+
     let mut outside = bytes;
     outside[28..36].copy_from_slice(&u64::MAX.to_le_bytes());
     assert!(matches!(

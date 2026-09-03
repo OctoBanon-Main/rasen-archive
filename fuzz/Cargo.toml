@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-rasen-archive = { path = ".." }
+rasen-archive = { path = "../crates/rasen-archive" }
 
 [[bin]]
 name = "archive_open"
