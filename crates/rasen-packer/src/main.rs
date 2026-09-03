@@ -7,10 +7,12 @@ use rasen_archive::{PackMode, PackOptions, Protection};
 
 use commands::{extract_one, info_archive, list_archive, pack_dir, verify_archive};
 
+const DEFAULT_KEY: &str = "example-key";
+
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
-    #[arg(long, global = true, env = "RPAK_KEY")]
+    #[arg(long, global = true, env = "RPAK_KEY", default_value = DEFAULT_KEY)]
     key: String,
     #[command(subcommand)]
     command: Command,
