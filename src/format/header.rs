@@ -43,9 +43,7 @@ pub(crate) fn write_header<W: Write>(w: &mut W, h: Header) -> Result<()> {
 pub(crate) fn read_header<R: Read>(r: &mut R) -> Result<Header> {
     let mut magic = [0u8; 4];
     r.read_exact(&mut magic)?;
-    if magic != MAGIC {
-        return Err(Error::BadMagic);
-    }
+    (magic == MAGIC).then_some(()).ok_or(Error::BadMagic)?;
 
     Ok(Header {
         version: read_u16(r)?,
@@ -63,27 +61,26 @@ pub(crate) fn read_header<R: Read>(r: &mut R) -> Result<Header> {
 }
 
 pub(crate) fn validate_header(header: Header) -> Result<()> {
-    if header.version != VERSION {
-        return Err(Error::UnsupportedVersion(header.version));
-    }
-    if header.header_size != HEADER_SIZE as u32 {
-        return Err(Error::UnsupportedHeaderSize(header.header_size));
-    }
-    if header.flags & REQUIRED_HEADER_FLAGS != REQUIRED_HEADER_FLAGS
-        || header.flags & !KNOWN_HEADER_FLAGS != 0
-    {
-        return Err(Error::UnsupportedFlags(header.flags));
-    }
+    (header.version == VERSION)
+        .then_some(())
+        .ok_or(Error::UnsupportedVersion(header.version))?;
+    (header.header_size == HEADER_SIZE as u32)
+        .then_some(())
+        .ok_or(Error::UnsupportedHeaderSize(header.header_size))?;
+    (header.flags & REQUIRED_HEADER_FLAGS == REQUIRED_HEADER_FLAGS
+        && header.flags & !KNOWN_HEADER_FLAGS == 0)
+        .then_some(())
+        .ok_or(Error::UnsupportedFlags(header.flags))?;
 
     let chunk_size = usize::try_from(header.chunk_size).map_err(|_| Error::InvalidChunkSize)?;
     validate_chunk_size(chunk_size)?;
     validate_alignment(header.alignment)?;
 
-    if header.toc_size > MAX_TOC_STORED_SIZE {
-        return Err(Error::TooLarge("stored TOC"));
-    }
-    if header.toc_raw_size > MAX_TOC_RAW_SIZE {
-        return Err(Error::TooLarge("raw TOC"));
-    }
+    (header.toc_size <= MAX_TOC_STORED_SIZE)
+        .then_some(())
+        .ok_or(Error::TooLarge("stored TOC"))?;
+    (header.toc_raw_size <= MAX_TOC_RAW_SIZE)
+        .then_some(())
+        .ok_or(Error::TooLarge("raw TOC"))?;
     Ok(())
 }

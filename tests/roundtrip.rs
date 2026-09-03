@@ -34,7 +34,7 @@ fn roundtrip_chunked_random_access_and_range() {
     .unwrap();
 
     out.set_position(0);
-    let mut archive = Archive::open(out, key).unwrap();
+    let archive = Archive::open(out, key).unwrap();
     assert_eq!(archive.chunk_size(), 32 * 1024);
     assert_eq!(archive.alignment(), 64);
     assert_eq!(archive.read("textures/hero.txt").unwrap(), files[0].data);
@@ -78,9 +78,9 @@ fn production_mode_strips_paths_and_keeps_hash_lookup() {
     .unwrap();
 
     out.set_position(0);
-    let mut archive = Archive::open(out, key).unwrap();
+    let archive = Archive::open(out, key).unwrap();
     assert!(archive.paths_stripped());
-    assert!(archive.entries().iter().all(|entry| entry.path.is_empty()));
+    assert!(archive.entries().iter().all(|entry| entry.path().is_none()));
     assert_eq!(archive.read("textures/player.dds").unwrap(), files[0].data);
 
     let asset_id = hash_path("audio/theme.ogg").unwrap();

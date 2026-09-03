@@ -1,0 +1,26 @@
+[package]
+name = "rasen-archive-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rasen-archive = { path = ".." }
+
+[[bin]]
+name = "archive_open"
+path = "fuzz_targets/archive_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive_read"
+path = "fuzz_targets/archive_read.rs"
+test = false
+doc = false
+bench = false

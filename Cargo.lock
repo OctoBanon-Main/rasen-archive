@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "rasen-archive"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "lz4_flex",
  "xxhash-rust",

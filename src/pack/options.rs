@@ -7,7 +7,7 @@ use crate::{
 pub enum PackMode {
     #[default]
     Debug,
-    Production
+    Production,
 }
 
 impl PackMode {
@@ -20,7 +20,7 @@ impl PackMode {
 pub struct PackOptions {
     pub chunk_size: usize,
     pub alignment: u32,
-    pub mode: PackMode
+    pub mode: PackMode,
 }
 
 impl Default for PackOptions {
@@ -28,7 +28,7 @@ impl Default for PackOptions {
         Self {
             chunk_size: DEFAULT_CHUNK_SIZE,
             alignment: DEFAULT_ALIGNMENT,
-            mode: PackMode::Debug
+            mode: PackMode::Debug,
         }
     }
 }

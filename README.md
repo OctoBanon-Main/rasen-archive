@@ -1,163 +1,179 @@
 # Rasen Archive
 
-**RPAK is an archive format and asset packaging library**
+Rasen Archive is a synchronous Rust library and CLI for RPAK
+game/runtime asset archives.
 
-It provides fast random access to game assets using chunked LZ4 compression, hashed asset paths, checksums, and an obfuscated table of contents.
+RPAK v1 stores independently readable RAW/LZ4 chunks, an LZ4-compressed
+table of contents, XXH3-64 non-cryptographic corruption detection
+checks, and normalized path hashes. See [SPEC.md](./SPEC.md) for wire
+details.
 
-## Features
+## Properties
 
-* Independent LZ4-compressed chunks
-* Raw storage fallback for incompressible data
-* Fast random access to individual assets
-* Partial asset reads without decompressing the entire file
-* XXH3-64 hashed asset paths
-* XXH3-64 chunk checksums
-* XXH3-64 TOC checksum
-* Configurable chunk size
-* Configurable payload alignment
-* XOR-obfuscated table of contents
-* Path normalization and validation
-* Debug/production packing modes
-* Production TOC path stripping (hash-only asset identifiers)
-* Hash collision detection
+-   Streaming packing with memory bounded by configured chunk size plus
+    retained archive metadata
+-   Concurrent positioned reads from one shared file-backed archive
+-   Full, chunk, clipped-range, exact-range, and destination-buffer
+    reads
+-   Configurable archive-open resource limits
+-   Debug archives may include paths; production archives may omit paths
+    and store hash-only entries
+-   Deterministic CLI ordering by normalized UTF-8 virtual path
+-   Failure-safe same-directory temporary output replacement
+-   Compatibility with the current RPAK v1 on-disk format
 
-For archive layout and format details, see [SPEC.md](./SPEC.md).
+## Build And Check
 
-## Building
-
-### Clone the repository
-
-```bash
-git clone https://github.com/OctoBanon-Main/rasen-archive
-cd rasen-archive
-```
-
-### Build
-
-```bash
+``` bash
 cargo build --release
+cargo test --all-targets --all-features
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-### Run tests
+## CLI
 
-```bash
-cargo test
-```
+Pack a directory with default 64 KiB chunks, 16-byte alignment, and
+debug paths:
 
-## Usage
-
-### Pack a directory
-
-```bash
+``` bash
 cargo run --release -- pack ./assets ./content.rpak
 ```
 
-By default, RPAK uses 64 KiB chunks and 16-byte payload alignment.
+Production mode strips paths. Optional positional values set chunk KiB
+and alignment:
 
-A custom chunk size and alignment can also be specified:
-
-```bash
-cargo run --release -- pack ./assets ./content.rpak 256 4096
-```
-
-This example uses 256 KiB chunks and 4096-byte alignment.
-
-### Debug vs production archives
-
-Debug mode is the default and keeps normalized asset paths in the TOC:
-
-```bash
-cargo run --release -- pack ./assets ./content-debug.rpak --debug
-```
-
-Production mode strips path strings from the TOC and stores only their XXH3-64 hashes:
-
-```bash
-cargo run --release -- pack ./assets ./content.rpak --production
-```
-
-`--prod` and `--mode=production` are accepted aliases. Chunk size and alignment can still be combined with the mode switch:
-
-```bash
+``` bash
 cargo run --release -- pack ./assets ./content.rpak 256 4096 --production
 ```
 
-Production archives can still be read with `archive.read("path/to/asset")`: the requested path is normalized and hashed at runtime. Because the original path strings are not present, production packing rejects hash collisions instead of relying on path strings to disambiguate them.
+List and extract:
 
-### List archive contents
-
-```bash
+``` bash
 cargo run --release -- list ./content.rpak
+cargo run --release -- extract ./content.rpak textures/player.dds ./player.dds
 ```
 
-### Extract an asset
+All commands accept `--key <value>` or `--key=<value>`. `RPAK_XOR_KEY`
+is used when the option is absent. The compatibility default is
+`example-key`.
 
-```bash
-cargo run --release -- extract \
-    ./content.rpak \
-    textures/player.dds \
-    ./player.dds
+The default key exists only for compatibility and testing. It must not
+be considered a secret or used as protection for shipped content.
+
+``` bash
+cargo run --release -- list ./content.rpak --key project-key
 ```
 
-## Runtime Usage
+The same key used for packing is needed to decode the TOC. XOR is
+obfuscation, not encryption: it provides no confidentiality or
+authentication, and a key embedded in a client executable is not secret.
+XXH3 provides non-cryptographic corruption detection only; an attacker
+can modify data and recompute checksums.
 
-Open an archive and read an asset by path:
+CLI discovery does not follow symlinks. Filesystem names must be valid
+UTF-8. Existing destination and temporary output files are excluded when
+output is inside the input tree.
 
-```rust
-use std::{
-    fs::File,
-    io::BufReader,
-};
+## Runtime
 
-use rasen_archive::Archive;
+`File` uses platform positioned I/O, so reads take `&self` and one
+archive can be shared between threads without a seek-cursor lock.
 
-const RPAK_KEY: &[u8] = b"example-key";
+``` rust
+use std::{fs::File, sync::Arc};
+use rasen_archive::{Archive, AssetId};
+
+const KEY: &[u8] = b"project-key";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let file = File::open("content.rpak")?;
-
-    let mut archive = Archive::open(
-        BufReader::new(file),
-        RPAK_KEY,
-    )?;
-
-    let data = archive.read("textures/player.dds")?;
-
-    println!("Loaded {} bytes", data.len());
-
+    let archive = Arc::new(Archive::open(File::open("content.rpak")?, KEY)?);
+    let full = archive.read("textures/player.dds")?;
+    let range = archive.read_range("audio/music.pcm", 64 * 1024, 4096)?;
+    let id = AssetId::from_path("textures/player.dds")?;
+    let same = archive.read_by_id(id)?;
+    assert_eq!(full, same);
+    assert!(!range.is_empty());
     Ok(())
 }
 ```
 
-Additional runtime details such as hash-based asset IDs and partial reads are documented in [SPEC.md](./SPEC.md).
+Use `Archive::open_with_limits` for application-specific hostile-input
+limits. `Archive::open` uses `ArchiveLimits::runtime_default()`; tooling
+can opt into `ArchiveLimits::tooling_default()`.
+`ArchiveLimits::permissive_v1()` remains an alias for format-maximal
+tooling limits.
 
-## Project Structure
+Archives loaded from untrusted sources should use explicit limits
+appropriate for the application.
 
-```text
-src/
-├── lib.rs              # Public API and re-exports
-├── archive/
-│   └── mod.rs          # Archive reader and runtime access
-├── pack/
-│   ├── mod.rs          # Archive creation
-│   └── options.rs      # Packing options
-├── format/
-│   ├── mod.rs          # Format constants and validation
-│   ├── header.rs       # Header encoding and decoding
-│   ├── toc.rs          # TOC encoding, decoding and layout validation
-│   ├── model.rs        # Internal on-disk models
-│   └── io.rs           # Binary I/O and alignment helpers
-├── codec.rs            # LZ4, XXH3 and XOR helpers
-├── path.rs             # Path normalization and hashing
-├── error.rs            # Error types
-└── bin/
-    └── rasen-pack.rs         # Command-line interface
+`Cursor<Vec<u8>>`, `Cursor<&[u8]>`, and `BufReader<File>` remain
+supported sources.
 
-tests/
-├── roundtrip.rs        # Public API round-trip tests
-└── corruption.rs       # Corruption and wrong-key tests
+`read_into`, `read_chunk_into`, and `read_range_with_scratch` avoid
+repeated output or scratch allocation. `read_range` clips at EOF for
+compatibility. `read_range_exact` rejects a request that extends past
+EOF.
+
+## Streaming Packing
+
+`Packer` opens and consumes one reader at a time. Short reads are
+accumulated until a chunk is full or EOF is reached.
+
+Packing is streaming, but archive metadata required for finalization is
+retained until the archive is completed.
+
+``` rust
+use std::{fs::File, io::BufWriter};
+use rasen_archive::{PackOptions, Packer};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut output = BufWriter::new(File::create("content.rpak.tmp")?);
+    let mut packer = Packer::new(&mut output, b"project-key", PackOptions::default())?;
+    let mut source = File::open("assets/textures/player.dds")?;
+    packer.add_reader("textures/player.dds", &mut source)?;
+    let summary = packer.finish()?;
+    println!("{} bytes", summary.archive_len);
+    Ok(())
+}
 ```
+
+Generic packing destinations must be empty. This prevents a shorter
+repack from silently leaving stale trailing bytes. Existing `InputFile`,
+`pack`, and `pack_with_options` APIs remain as buffered compatibility
+wrappers over `Packer`.
+
+## Security
+
+RPAK is an asset container format, not a security boundary.
+
+Implementations must protect against:
+
+-   memory exhaustion;
+-   CPU exhaustion;
+-   malformed archive input;
+-   invalid integer conversions;
+-   invalid offsets;
+-   unexpected resource usage.
+
+Cryptographic authentication and confidentiality are intentionally
+outside the scope of the format.
+
+See `SPEC.md` for wire-format rules and `SECURITY.md` for threat model
+details.
+
+## Fuzzing And Benchmarks
+
+``` bash
+cargo fuzz run archive_open -- -max_total_time=60
+cargo bench --bench scaling
+RPAK_BENCH_LARGE=1 cargo bench --bench scaling
+```
+
+Fuzz targets must never panic when processing malformed archive input.
+
+Large benchmark mode adds the optional one-million-entry open case.
 
 ## License
 
-See the [LICENSE](./LICENSE) file for licensing information.
+See [LICENSE](./LICENSE).

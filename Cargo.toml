@@ -1,6 +1,6 @@
 [package]
 name = "rasen-archive"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 description = "RPAK is an archive format and asset packaging library"
 authors = ["Maksim Bengraf <octobanon@proton.me>"]
@@ -9,3 +9,7 @@ license = "MIT"
 [dependencies]
 lz4_flex = "0.14"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+[[bench]]
+name = "scaling"
+harness = false

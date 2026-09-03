@@ -1,103 +1,225 @@
-# RPAK Specification
+# RPAK Format Specification
 
-This document describes the RPAK archive layout and runtime semantics.
+## Overview
 
-For build instructions and usage examples, see [README.md](./README.md).
+RPAK is a binary archive format designed for use by game engines and
+game runtime environments.
 
-## Archive Format
+The format provides:
 
-An RPAK archive consists of a fixed-size header, aligned asset chunks, and a table of contents stored at the end of the file.
+-   deterministic asset storage;
+-   chunk-based asset loading;
+-   optional LZ4 compression;
+-   integrity verification using non-cryptographic hashes;
+-   fast random access through a table of contents.
 
-```text
-┌──────────────────────────────────────┐
-│ RPAK Header                          │
-├──────────────────────────────────────┤
-│ Asset Chunk 0              RAW / LZ4 │
-├──────────────────────────────────────┤
-│ Padding                              │
-├──────────────────────────────────────┤
-│ Asset Chunk 1              RAW / LZ4 │
-├──────────────────────────────────────┤
-│ ...                                  │
-├──────────────────────────────────────┤
-│ XOR( LZ4( TOC ) )                    │
-└──────────────────────────────────────┘
-```
+RPAK does not provide cryptographic security. Checksums and obfuscation
+features are not intended for authentication, confidentiality, or
+protection against malicious modification.
 
-Large assets are split into independent chunks. Each chunk can be read and decompressed separately, allowing the engine to access only the required part of an asset.
+------------------------------------------------------------------------
 
-If LZ4 compression does not reduce the size of a chunk, the chunk is stored uncompressed.
+# File Structure
 
-The table of contents is serialized, compressed using LZ4, and then XOR-obfuscated before being written to the archive.
+An RPAK archive consists of:
 
-> XOR is used only for basic TOC obfuscation and should not be considered cryptographic protection.
+1.  Fixed-size header.
+2.  Aligned asset chunks.
+3.  Table of contents stored at the end of the file.
 
-## Asset IDs
+The current format version uses a fixed-size header. Future versions may
+introduce incompatible changes and must use a new version identifier.
 
-Asset paths are normalized and hashed using XXH3-64.
+------------------------------------------------------------------------
 
-This allows the engine to store a compact `u64` asset identifier instead of performing a string lookup every time an asset is requested.
+# Header
 
-```rust
-use rasen_archive::hash_path;
+The header contains:
 
-let asset_id = hash_path("textures/player.dds")?;
-```
+-   format version;
+-   feature flags;
+-   chunk configuration;
+-   chunk count;
+-   TOC location;
+-   TOC size information;
+-   TOC checksum.
 
-An asset can then be loaded directly by its hash:
+Readers must reject unsupported versions.
 
-```rust
-let data = archive.read_by_hash(asset_id)?;
-```
+------------------------------------------------------------------------
 
-In debug archives, paths are stored in the TOC so hash collisions can be disambiguated. In production archives, paths are stripped; the packer therefore rejects any hash collision before writing the archive.
+# Asset Storage
 
-When packing through the library, select the mode through `PackOptions`:
+Assets are divided into independent chunks.
 
-```rust
-use rasen_archive::{PackMode, PackOptions};
+Each chunk contains:
 
-let options = PackOptions {
-    mode: PackMode::Production,
-    ..PackOptions::default()
-};
-```
+-   stored data size;
+-   original decompressed size;
+-   offset;
+-   checksum information;
+-   compression information.
 
-## Streaming
+Chunks are independently stored and decoded after asset metadata has
+been resolved from the TOC.
 
-RPAK supports reading individual chunks:
+------------------------------------------------------------------------
 
-```rust
-let chunk = archive.read_chunk(
-    "audio/music.pcm",
-    10,
-)?;
-```
+# Compression
 
-It also supports reading arbitrary ranges from an asset:
+RPAK supports LZ4 compression.
 
-```rust
-let data = archive.read_range(
-    "textures/world.vt",
-    512 * 1024,
-    128 * 1024,
-)?;
-```
+The compression pipeline is:
 
-Only chunks intersecting the requested range are read and decompressed.
+    raw asset data
+            |
+            v
+    chunk split
+            |
+            v
+    optional LZ4 compression
+            |
+            v
+    stored chunk
 
-This is useful for large resources such as:
+Compressed chunks must declare their original size.
 
-* Audio streams
-* Virtual textures
-* Large world data
-* Precomputed geometry
-* Other streamable game assets
+Readers must verify that decompressed output matches the expected size.
 
-## Integrity
+------------------------------------------------------------------------
 
-Every asset chunk contains an XXH3-64 checksum calculated from its original uncompressed data.
+# Table of Contents
 
-The table of contents also has its own XXH3-64 checksum.
+The TOC stores:
 
-Checksums are validated when data is loaded, allowing corrupted archive data to be detected before it is passed to the engine.
+-   asset identifiers;
+-   asset paths (when available);
+-   chunk references;
+-   asset sizes;
+-   metadata required for loading.
+
+The TOC storage pipeline is:
+
+    serialize TOC
+            |
+            v
+    calculate XXH3 checksum
+            |
+            v
+    LZ4 compression
+            |
+            v
+    optional XOR obfuscation
+            |
+            v
+    stored TOC
+
+The XOR layer is only a lightweight obfuscation mechanism and is not
+cryptographic protection.
+
+------------------------------------------------------------------------
+
+# Asset Identifiers
+
+Asset identifiers are generated from normalized asset paths using
+XXH3-64.
+
+Path normalization rules must be identical between packer and reader
+implementations.
+
+Production archives may remove stored paths.
+
+The official packer rejects hash collisions when creating production
+archives.
+
+The archive format itself does not provide collision resistance
+guarantees.
+
+------------------------------------------------------------------------
+
+# Integrity Checking
+
+Checksums are used to detect accidental corruption.
+
+Validation occurs after decoding and before returning data to the
+caller.
+
+Checksums do not prevent:
+
+-   malicious archive creation;
+-   excessive memory usage;
+-   excessive CPU usage;
+-   denial of service attacks.
+
+------------------------------------------------------------------------
+
+# Alignment
+
+Asset chunks are aligned according to the archive alignment rules.
+
+Readers must validate alignment requirements before accessing chunk
+data.
+
+Invalid alignment must result in archive rejection.
+
+------------------------------------------------------------------------
+
+# Runtime Limits and Validation
+
+Runtime implementations must enforce resource limits before allocating
+memory or processing archive data.
+
+Recommended runtime limits:
+
+  Limit                      Purpose
+  -------------------------- --------------------------------------
+  max_single_asset_bytes     Prevent oversized asset allocations
+  max_entries                Prevent excessive metadata usage
+  max_chunks                 Prevent excessive chunk tables
+  max_metadata_bytes         Bound metadata memory usage
+  max_chunks_per_operation   Prevent excessive CPU usage per read
+
+Tooling environments may use higher limits than runtime environments.
+
+Large archives suitable for editors or build systems should not
+automatically be considered safe for game runtime loading.
+
+------------------------------------------------------------------------
+
+# Error Handling
+
+Invalid archives must fail gracefully.
+
+Examples of invalid data:
+
+-   unsupported version;
+-   invalid offsets;
+-   truncated data;
+-   invalid chunk references;
+-   checksum mismatch;
+-   resource limits exceeded.
+
+Archive parsing must never rely on unchecked input data.
+
+Malformed archives must not cause:
+
+-   crashes;
+-   panics;
+-   out-of-bounds access.
+
+------------------------------------------------------------------------
+
+# Security Considerations
+
+RPAK is designed as an asset container, not as a security boundary.
+
+Implementations must protect against:
+
+-   memory exhaustion;
+-   CPU exhaustion;
+-   malformed input;
+-   invalid integer conversions;
+-   invalid offsets.
+
+Cryptographic authentication and confidentiality are intentionally
+outside the scope of the format.
