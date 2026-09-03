@@ -30,7 +30,7 @@ for wire details.
 Workspace layout:
 
 -   `crates/rasen-archive`: format, pack/read APIs, tests, and benchmarks
--   `crates/rasen-pack`: Clap-based CLI packer and archive inspector
+-   `crates/rasen-packer`: Clap-based CLI packer and archive inspector
 
 ``` bash
 cargo build --workspace --release
@@ -45,20 +45,20 @@ Pack a directory with default 64 KiB chunks, 16-byte alignment, debug
 paths, and XOR protection:
 
 ``` bash
-cargo run -p rasen-pack --release -- pack ./assets ./content.rpak
+cargo run -p rasen-packer --release -- pack ./assets ./content.rpak
 ```
 
 Production mode strips paths. Packing options use named values:
 
 ``` bash
-cargo run -p rasen-pack --release -- pack ./assets ./content.rpak --mode=production --protection=aead --chunk-kib=256 --alignment=4096 --key=project-key
+cargo run -p rasen-packer --release -- pack ./assets ./content.rpak --mode=production --protection=aead --chunk-kib=256 --alignment=4096 --key=project-key
 ```
 
 List and extract:
 
 ``` bash
-cargo run -p rasen-pack --release -- list ./content.rpak
-cargo run -p rasen-pack --release -- extract ./content.rpak textures/player.dds ./player.dds
+cargo run -p rasen-packer --release -- list ./content.rpak
+cargo run -p rasen-packer --release -- extract ./content.rpak textures/player.dds ./player.dds
 ```
 
 All commands accept `--key <value>` or `--key=<value>`. `RPAK_KEY` is
@@ -69,7 +69,7 @@ The default key exists only for compatibility and testing. It must not
 be considered a secret or used as protection for shipped content.
 
 ``` bash
-cargo run -p rasen-pack --release -- list ./content.rpak --key project-key
+cargo run -p rasen-packer --release -- list ./content.rpak --key project-key
 ```
 
 The same key used for packing is needed for reading. XOR protects only
