@@ -170,9 +170,6 @@ Implementations must protect against:
 -   invalid offsets;
 -   unexpected resource usage.
 
-See `SPEC.md` for wire-format rules and `SECURITY.md` for threat model
-details.
-
 ## Fuzzing And Benchmarks
 
 ``` bash
