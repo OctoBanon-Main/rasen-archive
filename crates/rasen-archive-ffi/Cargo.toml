@@ -1,0 +1,13 @@
+[package]
+name = "rasen-archive-ffi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "C ABI for rasen-archive"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+rasen-archive = { path = "../rasen-archive" }

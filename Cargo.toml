@@ -1,10 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["crates/rasen-archive", "crates/rasen-packer"]
+members = ["crates/rasen-archive", "crates/rasen-archive-ffi", "crates/rasen-packer"]
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 authors = ["Maksim Bengraf <octobanon@proton.me>"]
 license = "MIT"

@@ -30,6 +30,7 @@ for wire details.
 Workspace layout:
 
 -   `crates/rasen-archive`: format, pack/read APIs, tests, and benchmarks
+-   `crates/rasen-archive-ffi`: C ABI and `include/rasen_archive.h`
 -   `crates/rasen-packer`: Clap-based CLI packer and archive inspector
 
 ``` bash
