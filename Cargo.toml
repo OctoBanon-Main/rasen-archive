@@ -8,3 +8,6 @@ version = "0.6.0"
 edition = "2024"
 authors = ["Maksim Bengraf <octobanon@proton.me>"]
 license = "MIT"
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
